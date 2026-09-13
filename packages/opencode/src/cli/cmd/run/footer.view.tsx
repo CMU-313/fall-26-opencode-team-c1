@@ -8,7 +8,7 @@
 // All state comes from the parent RunFooter through SolidJS signals.
 // The view itself is stateless except for derived memos.
 /** @jsxImportSource @opentui/solid */
-import { useTerminalDimensions } from "@opentui/solid"
+import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup } from "solid-js"
 import { registerOpencodeSpinner } from "@opencode-ai/tui/component/register-spinner"
 import { createColors, createFrames } from "@opencode-ai/tui/ui/spinner"
@@ -132,11 +132,13 @@ export function RunFooterView(props: RunFooterViewProps) {
   })
   const [route, setRoute] = createSignal<FooterPromptRoute>({ type: "composer" })
   const [subagentMenuRows, setSubagentMenuRows] = createSignal(RUN_SUBAGENT_PANEL_ROWS)
+  const [scopeNudgeSelection, setScopeNudgeSelection] = createSignal<"suggestion" | "send">("suggestion")
   const queuedPrompts = createMemo(() => props.queuedPrompts?.() ?? [])
   const skills = createMemo(() => (props.commands() ?? []).filter((item) => item.source === "skill"))
   const prompt = createMemo(() => active().type === "prompt" && route().type === "composer")
   const selectingSubagent = createMemo(() => active().type === "prompt" && route().type === "subagent-menu")
   const selectingQueued = createMemo(() => active().type === "prompt" && route().type === "queued-menu")
+  const nudgingScope = createMemo(() => active().type === "prompt" && route().type === "scope-nudge")
   const inspecting = createMemo(() => active().type === "prompt" && route().type === "subagent")
   const commanding = createMemo(() => active().type === "prompt" && route().type === "command")
   const skilling = createMemo(() => active().type === "prompt" && route().type === "skill")
@@ -146,6 +148,7 @@ export function RunFooterView(props: RunFooterViewProps) {
     () =>
       active().type === "permission" ||
       active().type === "question" ||
+      nudgingScope() ||
       selectingQueued() ||
       selectingSubagent() ||
       commanding() ||
@@ -380,6 +383,49 @@ export function RunFooterView(props: RunFooterViewProps) {
     onRows: props.onRows,
     onStatus: props.onStatus,
   })
+
+  createEffect(() => {
+    if (composer.scopeNudge()) {
+      setScopeNudgeSelection("suggestion")
+      setRoute({ type: "scope-nudge" })
+      return
+    }
+
+    if (route().type === "scope-nudge") {
+      setRoute({ type: "composer" })
+    }
+  })
+
+  useKeyboard((event) => {
+    if (!nudgingScope() || event.defaultPrevented) return
+
+    if (["up", "k", "left", "h"].includes(event.name)) {
+      setScopeNudgeSelection("suggestion")
+      event.preventDefault()
+      return
+    }
+
+    if (["down", "j", "right", "l", "tab"].includes(event.name)) {
+      setScopeNudgeSelection("send")
+      event.preventDefault()
+      return
+    }
+
+    if (event.name === "return") {
+      if (scopeNudgeSelection() === "suggestion") {
+        composer.useScopeSuggestion()
+      } else {
+        composer.sendScopeNudgeAnyway()
+      }
+      event.preventDefault()
+      return
+    }
+
+    if (event.name === "escape") {
+      composer.dismissScopeNudge()
+      event.preventDefault()
+    }
+  })
   const shell = createMemo(() => prompt() && composer.shell())
   const menu = createMemo(() => prompt() && composer.visible())
   const stateStatus = createMemo(() => props.state().status.trim())
@@ -499,7 +545,7 @@ export function RunFooterView(props: RunFooterViewProps) {
 
   useBindings(() => ({
     mode: OPENCODE_BASE_MODE,
-    enabled: active().type === "prompt" && route().type === "composer" && !composer.visible(),
+    enabled: active().type === "prompt" && route().type === "composer" && !composer.visible() && !composer.scopeNudge(),
     commands: [
       {
         name: "command.palette.show",
@@ -677,6 +723,41 @@ export function RunFooterView(props: RunFooterViewProps) {
                             onContentChange={composer.onContentChange}
                             bind={composer.bind}
                           />
+                        </Match>
+                        <Match when={nudgingScope()}>
+                          <box width="100%" height="100%" flexDirection="column" backgroundColor={theme().surface} paddingLeft={1} paddingRight={2}>
+                            <box flexDirection="row" gap={1} paddingTop={1} flexShrink={0}>
+                              <text fg={theme().warning}>!</text>
+                              <text fg={theme().text}>This request may be too broad</text>
+                            </box>
+                            <box paddingLeft={2} paddingTop={1} flexShrink={0}>
+                              <text fg={theme().muted}>Try a smaller learning-focused step instead.</text>
+                            </box>
+                            <box paddingLeft={2} paddingTop={1} paddingRight={1} flexShrink={0}>
+                              <text fg={theme().text} wrapMode="word">
+                                {composer.scopeNudge()?.suggestion ?? ""}
+                              </text>
+                            </box>
+                            <box flexDirection="column" paddingLeft={2} paddingTop={1} flexShrink={0}>
+                              <text fg={scopeNudgeSelection() === "suggestion" ? theme().highlight : theme().muted}>
+                                {scopeNudgeSelection() === "suggestion" ? "> " : "  "}Use suggestion
+                              </text>
+                              <text fg={scopeNudgeSelection() === "send" ? theme().highlight : theme().muted}>
+                                {scopeNudgeSelection() === "send" ? "> " : "  "}Send anyway
+                              </text>
+                            </box>
+                            <box flexDirection="row" gap={2} paddingLeft={2} paddingTop={1} flexShrink={0}>
+                              <text fg={theme().text}>
+                                up/down <span style={{ fg: theme().muted }}>select</span>
+                              </text>
+                              <text fg={theme().text}>
+                                enter <span style={{ fg: theme().muted }}>confirm</span>
+                              </text>
+                              <text fg={theme().text}>
+                                esc <span style={{ fg: theme().muted }}>edit</span>
+                              </text>
+                            </box>
+                          </box>
                         </Match>
                         <Match when={selectingSubagent()}>
                           <RunSubagentSelectBody

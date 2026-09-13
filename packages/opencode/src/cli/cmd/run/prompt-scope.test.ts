@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { isUnmistakablyBroadPrompt } from "./prompt-scope"
+import { isUnmistakablyBroadPrompt, learningPromptSuggestion } from "./prompt-scope"
 
 describe("isUnmistakablyBroadPrompt", () => {
   test.each([
@@ -50,5 +50,13 @@ describe("isUnmistakablyBroadPrompt", () => {
     "\n\t/implement the entire assignment",
   ])("does not match slash commands: %s", (text) => {
     expect(isUnmistakablyBroadPrompt({ text })).toBe(false)
+  })
+
+  test("suggests an assignment-focused learning prompt", () => {
+    expect(learningPromptSuggestion("do my whole assignment")).toContain("assignment requirements")
+  })
+
+  test("suggests a project-focused learning prompt", () => {
+    expect(learningPromptSuggestion("build the full app")).toContain("break this project")
   })
 })

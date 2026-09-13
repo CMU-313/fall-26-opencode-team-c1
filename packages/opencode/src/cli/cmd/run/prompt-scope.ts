@@ -18,3 +18,12 @@ export function isUnmistakablyBroadPrompt(input: PromptScopeInput) {
 
   return broadPatterns.some((pattern) => pattern.test(text))
 }
+
+export function learningPromptSuggestion(text: string) {
+  const normalized = text.trim().toLowerCase().replace(/\s+/g, " ")
+  if (/\b(?:assignment|homework)\b/.test(normalized)) {
+    return "Help me understand the assignment requirements and identify the first small step I should take. Give one hint, but do not implement it."
+  }
+
+  return "Help me break this project into the first small step. Explain what I should inspect or build first and give one hint, but do not implement it."
+}
