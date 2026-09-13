@@ -51,7 +51,10 @@ export async function classifyPromptScope<Model>(
     })
     .then(
       (text) => ({ type: "generated" as const, text }),
-      () => ({ type: "unavailable" as const, reason: signal.aborted ? "timeout" : ("generation_failed" as const) }),
+      () => ({
+        type: "unavailable" as const,
+        reason: signal.aborted ? ("timeout" as const) : ("generation_failed" as const),
+      }),
     )
   if (generated.type === "unavailable") return generated
 
