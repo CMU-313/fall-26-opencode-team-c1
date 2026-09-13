@@ -75,7 +75,7 @@ export function DialogPromptScope(props: DialogPromptScopeProps) {
               }}
             >
               <text fg={key === store.active ? theme.selectedListItemText : theme.textMuted}>
-                {key === "suggestion" ? "Use suggestion" : "Send anyway"}
+                {key === "suggestion" ? "Use suggestion" : "Ask anyway"}
               </text>
             </box>
           )}

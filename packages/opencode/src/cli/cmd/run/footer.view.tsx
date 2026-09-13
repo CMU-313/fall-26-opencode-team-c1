@@ -746,7 +746,7 @@ export function RunFooterView(props: RunFooterViewProps) {
                                 {scopeNudgeSelection() === "suggestion" ? "> " : "  "}Use suggestion
                               </text>
                               <text fg={scopeNudgeSelection() === "send" ? theme().highlight : theme().muted}>
-                                {scopeNudgeSelection() === "send" ? "> " : "  "}Send anyway
+                                {scopeNudgeSelection() === "send" ? "> " : "  "}Ask anyway
                               </text>
                             </box>
                             <box flexDirection="row" gap={2} paddingLeft={2} paddingTop={1} flexShrink={0}>
