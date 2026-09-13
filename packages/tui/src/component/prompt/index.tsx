@@ -45,6 +45,7 @@ import { createColors, createFrames } from "../../ui/spinner"
 import { useDialog } from "../../ui/dialog"
 import { DialogProvider as DialogProviderConnect } from "../dialog-provider"
 import { DialogAlert } from "../../ui/dialog-alert"
+import { DialogPromptScope } from "../../ui/dialog-prompt-scope"
 import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
 import { createFadeIn } from "../../util/signal"
@@ -57,6 +58,7 @@ import { usePromptWorkspace } from "./workspace"
 import { usePromptMove } from "./move"
 import { readLocalAttachment } from "./local-attachment"
 import { useLocation } from "../../context/location"
+import { isUnmistakablyBroadPrompt, learningPromptSuggestion } from "../../prompt/scope"
 
 registerOpencodeSpinner()
 
@@ -928,6 +930,7 @@ export function Prompt(props: PromptProps) {
   })
 
   let submitting = false
+  let approvedScopePrompt: string | undefined
   async function submit() {
     // Prevent overlapping invocations (e.g. a double-pressed Enter, or the
     // input's native onSubmit racing another dispatch). Without this guard,
@@ -965,6 +968,34 @@ export function Prompt(props: PromptProps) {
       void exit()
       return true
     }
+    if (
+      approvedScopePrompt !== store.prompt.input &&
+      isUnmistakablyBroadPrompt({
+        text: store.prompt.input,
+        mode: store.mode === "shell" ? "shell" : undefined,
+      })
+    ) {
+      const prompt = structuredClone(unwrap(store.prompt))
+      const suggestion = learningPromptSuggestion(prompt.input)
+      dialog.replace(() => (
+        <DialogPromptScope
+          suggestion={suggestion}
+          onUseSuggestion={() => {
+            const parts = prompt.parts.filter((part) => part.type !== "text")
+            input.setText(suggestion)
+            setStore("prompt", { input: suggestion, parts })
+            restoreExtmarksFromParts(parts)
+            input.gotoBufferEnd()
+          }}
+          onSendAnyway={() => {
+            approvedScopePrompt = prompt.input
+            void submit()
+          }}
+        />
+      ))
+      return false
+    }
+    approvedScopePrompt = undefined
     const selectedModel = local.model.current()
     if (!selectedModel) {
       void promptModelWarning()

@@ -26,7 +26,7 @@ import {
 import { OPENCODE_BASE_MODE, useBindings } from "@opencode-ai/tui/keymap"
 import { realignEditorPromptParts, resolveEditorSlashValue } from "./prompt.editor"
 import { FOOTER_MENU_ROWS, createFooterMenuState, type RunFooterMenuItem } from "./footer.menu"
-import { isUnmistakablyBroadPrompt, learningPromptSuggestion } from "./prompt-scope"
+import { isUnmistakablyBroadPrompt, learningPromptSuggestion } from "@opencode-ai/tui/prompt/scope"
 import type { RunFooterTheme } from "./theme"
 import type { FooterState, RunAgent, RunCommand, RunPrompt, RunPromptPart, RunResource, RunTuiConfig } from "./types"
 

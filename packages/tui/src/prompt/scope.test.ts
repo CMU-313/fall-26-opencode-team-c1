@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { isUnmistakablyBroadPrompt, learningPromptSuggestion } from "./prompt-scope"
+import { isUnmistakablyBroadPrompt, learningPromptSuggestion } from "./scope"
 
 describe("isUnmistakablyBroadPrompt", () => {
   test.each([
