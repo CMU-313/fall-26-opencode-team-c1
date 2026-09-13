@@ -49,6 +49,7 @@ import type {
   RunDiffStyle,
   RunInput,
   RunPrompt,
+  RunPromptScopeClassification,
   RunProvider,
   RunResource,
   RunTuiConfig,
@@ -100,6 +101,7 @@ type RunFooterViewProps = {
   onInterrupt: () => boolean
   onBackground?: () => void
   onEditorOpen: (input: { value: string }) => Promise<string | undefined>
+  classifyPromptScope?: (text: string) => Promise<RunPromptScopeClassification | undefined>
   onInputClear: () => void
   onExitRequest?: () => boolean
   onRequestExit?: (fn: (() => boolean) | undefined) => void
@@ -376,6 +378,7 @@ export function RunFooterView(props: RunFooterViewProps) {
     onCycle: props.onCycle,
     onInterrupt: props.onInterrupt,
     onEditorOpen: props.onEditorOpen,
+    classifyPromptScope: props.classifyPromptScope ?? (async () => undefined),
     onInputClear: props.onInputClear,
     onExitRequest: props.onExitRequest,
     onExit: props.onExit,

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { isUnmistakablyBroadPrompt, learningPromptSuggestion } from "./scope"
+import { isUnmistakablyBroadPrompt, learningPromptSuggestion, learningScopeNudge } from "./scope"
 
 describe("isUnmistakablyBroadPrompt", () => {
   test.each([
@@ -58,5 +58,16 @@ describe("isUnmistakablyBroadPrompt", () => {
 
   test("suggests a project-focused learning prompt", () => {
     expect(learningPromptSuggestion("build the full app")).toContain("break this project")
+  })
+
+  test.each([
+    [{ classification: "broad", confidence: 0.8, suggestion: "Start by reading the requirements." }, "Start by reading the requirements."],
+    [{ classification: "broad", confidence: 0.99, suggestion: "  Plan the first step.  " }, "Plan the first step."],
+    [{ classification: "broad", confidence: 0.79, suggestion: "Plan the first step." }, undefined],
+    [{ classification: "not_broad", confidence: 1 }, undefined],
+    [{ classification: "broad", confidence: Number.NaN, suggestion: "Plan the first step." }, undefined],
+    [{ classification: "broad", confidence: 1, suggestion: "   " }, undefined],
+  ] as const)("uses only high-confidence broad classifier results: %o", (result, expected) => {
+    expect(learningScopeNudge(result)).toBe(expected)
   })
 })

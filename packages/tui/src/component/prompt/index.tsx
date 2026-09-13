@@ -58,7 +58,7 @@ import { usePromptWorkspace } from "./workspace"
 import { usePromptMove } from "./move"
 import { readLocalAttachment } from "./local-attachment"
 import { useLocation } from "../../context/location"
-import { isUnmistakablyBroadPrompt, learningPromptSuggestion } from "../../prompt/scope"
+import { isUnmistakablyBroadPrompt, learningPromptSuggestion, learningScopeNudge } from "../../prompt/scope"
 
 registerOpencodeSpinner()
 
@@ -178,6 +178,7 @@ export function Prompt(props: PromptProps) {
   const shell = createMemo(() => props.placeholders?.shell ?? [])
   const fileContextEnabled = createMemo(() => kv.get("file_context_enabled", true))
   const [dismissedEditorSelectionKey, setDismissedEditorSelectionKey] = createSignal<string>()
+  const [scopeChecking, setScopeChecking] = createSignal(false)
   const editorContext = createMemo(() => {
     const selection = fileContextEnabled() ? editor.selection() : undefined
     if (!selection) return
@@ -931,6 +932,25 @@ export function Prompt(props: PromptProps) {
 
   let submitting = false
   let approvedScopePrompt: string | undefined
+  function showScopeNudge(prompt: PromptInfo, suggestion: string) {
+    dialog.replace(() => (
+      <DialogPromptScope
+        suggestion={suggestion}
+        onUseSuggestion={() => {
+          const parts = prompt.parts.filter((part) => part.type !== "text")
+          input.setText(suggestion)
+          setStore("prompt", { input: suggestion, parts })
+          restoreExtmarksFromParts(parts)
+          input.gotoBufferEnd()
+        }}
+        onSendAnyway={() => {
+          approvedScopePrompt = prompt.input
+          void submit()
+        }}
+      />
+    ))
+  }
+
   async function submit() {
     // Prevent overlapping invocations (e.g. a double-pressed Enter, or the
     // input's native onSubmit racing another dispatch). Without this guard,
@@ -976,24 +996,21 @@ export function Prompt(props: PromptProps) {
       })
     ) {
       const prompt = structuredClone(unwrap(store.prompt))
-      const suggestion = learningPromptSuggestion(prompt.input)
-      dialog.replace(() => (
-        <DialogPromptScope
-          suggestion={suggestion}
-          onUseSuggestion={() => {
-            const parts = prompt.parts.filter((part) => part.type !== "text")
-            input.setText(suggestion)
-            setStore("prompt", { input: suggestion, parts })
-            restoreExtmarksFromParts(parts)
-            input.gotoBufferEnd()
-          }}
-          onSendAnyway={() => {
-            approvedScopePrompt = prompt.input
-            void submit()
-          }}
-        />
-      ))
+      showScopeNudge(prompt, learningPromptSuggestion(prompt.input))
       return false
+    }
+    if (approvedScopePrompt !== store.prompt.input && store.mode !== "shell" && !trimmed.startsWith("/")) {
+      const prompt = structuredClone(unwrap(store.prompt))
+      setScopeChecking(true)
+      const result = await sdk.client.promptScope.classify({ text: prompt.input }).catch(() => undefined)
+      setScopeChecking(false)
+      if (store.prompt.input !== prompt.input) return false
+
+      const suggestion = learningScopeNudge(result?.data)
+      if (suggestion) {
+        showScopeNudge(prompt, suggestion)
+        return false
+      }
     }
     approvedScopePrompt = undefined
     const selectedModel = local.model.current()
@@ -1629,6 +1646,11 @@ export function Prompt(props: PromptProps) {
                   <text fg={theme.accent}>{notice()}</text>
                 </box>
               )}
+            </Match>
+            <Match when={scopeChecking()}>
+              <box paddingLeft={3}>
+                <text fg={theme.accent}>Checking prompt scope...</text>
+              </box>
             </Match>
             <Match when={workspace.label()}>
               {(label) => (

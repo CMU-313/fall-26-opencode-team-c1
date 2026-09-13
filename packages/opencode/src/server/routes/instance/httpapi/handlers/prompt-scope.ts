@@ -13,7 +13,14 @@ export const promptScopeHandlers = HttpApiBuilder.group(InstanceHttpApi, "prompt
       payload: typeof PromptScopeClassifyPayload.Type
     }) {
       const result = yield* classifier.classify(ctx.payload.text)
-      if (result) return result
+      if (result.type === "classified") {
+        yield* Effect.logDebug("prompt scope classified", {
+          classification: result.classification.classification,
+          confidence: result.classification.confidence,
+        })
+        return result.classification
+      }
+      yield* Effect.logDebug("prompt scope classification unavailable", { reason: result.reason })
       return yield* new ServiceUnavailableError({
         message: "Prompt scope classification is unavailable",
         service: "prompt-scope.classify",

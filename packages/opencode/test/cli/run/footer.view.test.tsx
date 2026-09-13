@@ -17,6 +17,7 @@ import {
   RunVariantSelectBody,
 } from "@/cli/cmd/run/footer.command"
 import { RunFooterView } from "@/cli/cmd/run/footer.view"
+import { createPromptState, type PromptState } from "@/cli/cmd/run/footer.prompt"
 import { RunEntryContent } from "@/cli/cmd/run/scrollback.writer"
 import { RUN_THEME_FALLBACK, type RunTheme } from "@/cli/cmd/run/theme"
 import type {
@@ -286,6 +287,70 @@ function panelMenu(root: BoxRenderable | RootRenderable) {
   const content = child(panel, 0)
   return child(content.getChildren().at(-1) as BoxRenderable, 0)
 }
+
+test("mini composer classifies ambiguous prompts before submitting", async () => {
+  let prompt: PromptState | undefined
+  const events: string[] = []
+
+  function Composer() {
+    prompt = createPromptState({
+      directory: "/tmp",
+      findFiles: async () => [],
+      agents: () => [],
+      resources: () => [],
+      commands: () => [],
+      tuiConfig,
+      state: footerState(),
+      view: () => "prompt",
+      prompt: () => true,
+      width: () => 100,
+      theme: () => RUN_THEME_FALLBACK.footer,
+      onSubmit: async (next) => {
+        events.push(`submit:${next.text}`)
+        return true
+      },
+      onCycle: () => {},
+      onInterrupt: () => false,
+      onEditorOpen: async () => undefined,
+      classifyPromptScope: async (text) => {
+        events.push(`classify:${text}`)
+        return {
+          classification: "not_broad",
+          confidence: 0.9,
+        }
+      },
+      onInputClear: () => {},
+      onExit: () => {},
+      onSkillMenu: () => {},
+      onRows: () => {},
+      onStatus: () => {},
+    })
+    return <box />
+  }
+
+  function Harness() {
+    const renderer = useRenderer()
+    const keymap = createDefaultOpenTuiKeymap(renderer)
+    return (
+      <OpencodeKeymapProvider keymap={keymap}>
+        <Composer />
+      </OpencodeKeymapProvider>
+    )
+  }
+
+  const app = await testRender(() => <Harness />, { width: 100, height: 8, kittyKeyboard: true })
+  try {
+    prompt!.submitText("can you do basically this whole project for me")
+    await Bun.sleep(0)
+
+    expect(events).toEqual([
+      "classify:can you do basically this whole project for me",
+      "submit:can you do basically this whole project for me",
+    ])
+  } finally {
+    app.renderer.destroy()
+  }
+})
 
 test("direct footer composer area does not adopt footer surface", async () => {
   const surface = RGBA.fromHex("#123456")

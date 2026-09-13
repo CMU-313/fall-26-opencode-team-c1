@@ -54,6 +54,10 @@ type RunResourceMap = NonNullable<Awaited<ReturnType<OpencodeClient["experimenta
 
 export type RunResource = RunResourceMap[string]
 
+export type RunPromptScopeClassification = NonNullable<
+  Awaited<ReturnType<OpencodeClient["promptScope"]["classify"]>>["data"]
+>
+
 export type RunInput = {
   sdk: OpencodeClient
   directory: string

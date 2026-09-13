@@ -14,9 +14,12 @@ describe("classifyPromptScope", () => {
     })
 
     expect(result).toEqual({
-      classification: "broad",
-      confidence: 0.91,
-      suggestion: "Help me identify the first requirement.",
+      type: "classified",
+      classification: {
+        classification: "broad",
+        confidence: 0.91,
+        suggestion: "Help me identify the first requirement.",
+      },
     })
   })
 
@@ -26,7 +29,7 @@ describe("classifyPromptScope", () => {
       generate: async () => '{"classification":"not_broad","confidence":0.88}',
     })
 
-    expect(result).toEqual({ classification: "not_broad", confidence: 0.88 })
+    expect(result).toEqual({ type: "classified", classification: { classification: "not_broad", confidence: 0.88 } })
   })
 
   test("returns unavailable when no small model is available", async () => {
@@ -39,7 +42,7 @@ describe("classifyPromptScope", () => {
       },
     })
 
-    expect(result).toBeUndefined()
+    expect(result).toEqual({ type: "unavailable", reason: "no_model" })
     expect(generated).toBe(false)
   })
 
@@ -57,8 +60,8 @@ describe("classifyPromptScope", () => {
       },
     })
 
-    expect(resolutionFailure).toBeUndefined()
-    expect(generationFailure).toBeUndefined()
+    expect(resolutionFailure).toEqual({ type: "unavailable", reason: "model_resolution_failed" })
+    expect(generationFailure).toEqual({ type: "unavailable", reason: "generation_failed" })
   })
 
   test("returns unavailable when the model output is invalid", async () => {
@@ -67,7 +70,7 @@ describe("classifyPromptScope", () => {
       generate: async () => "This request is broad.",
     })
 
-    expect(result).toBeUndefined()
+    expect(result).toEqual({ type: "unavailable", reason: "invalid_response" })
   })
 
   test("returns unavailable when generation exceeds the timeout", async () => {
@@ -80,6 +83,6 @@ describe("classifyPromptScope", () => {
         }),
     })
 
-    expect(result).toBeUndefined()
+    expect(result).toEqual({ type: "unavailable", reason: "timeout" })
   })
 })

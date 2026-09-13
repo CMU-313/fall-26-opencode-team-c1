@@ -26,9 +26,18 @@ import {
 import { OPENCODE_BASE_MODE, useBindings } from "@opencode-ai/tui/keymap"
 import { realignEditorPromptParts, resolveEditorSlashValue } from "./prompt.editor"
 import { FOOTER_MENU_ROWS, createFooterMenuState, type RunFooterMenuItem } from "./footer.menu"
-import { isUnmistakablyBroadPrompt, learningPromptSuggestion } from "@opencode-ai/tui/prompt/scope"
+import { isUnmistakablyBroadPrompt, learningPromptSuggestion, learningScopeNudge } from "@opencode-ai/tui/prompt/scope"
 import type { RunFooterTheme } from "./theme"
-import type { FooterState, RunAgent, RunCommand, RunPrompt, RunPromptPart, RunResource, RunTuiConfig } from "./types"
+import type {
+  FooterState,
+  RunAgent,
+  RunCommand,
+  RunPrompt,
+  RunPromptPart,
+  RunPromptScopeClassification,
+  RunResource,
+  RunTuiConfig,
+} from "./types"
 
 const AUTOCOMPLETE_ROWS = FOOTER_MENU_ROWS
 const AUTOCOMPLETE_BOTTOM_ROWS = 1
@@ -73,6 +82,7 @@ type PromptInput = {
   onCycle: () => void
   onInterrupt: () => boolean
   onEditorOpen: (input: { value: string }) => Promise<string | undefined>
+  classifyPromptScope: (text: string) => Promise<RunPromptScopeClassification | undefined>
   onInputClear: () => void
   onExitRequest?: () => boolean
   onExit: () => void
@@ -313,6 +323,7 @@ export function createPromptState(input: PromptInput): PromptState {
   const [query, setQuery] = createSignal("")
   const [scopeNudge, setScopeNudge] = createSignal<{ prompt: RunPrompt; suggestion: string }>()
   let approvedPrompt: string | undefined
+  let checkingScope = false
   const visible = createMemo(() => mode() !== false)
 
   const setShellMode = (value: boolean) => {
@@ -1168,6 +1179,7 @@ export function createPromptState(input: PromptInput): PromptState {
   }
 
   const submitPrompt = (next: RunPrompt) => {
+    if (checkingScope) return
     if (!area || area.isDestroyed) {
       draft = clonePrompt(next)
     }
@@ -1212,10 +1224,9 @@ export function createPromptState(input: PromptInput): PromptState {
       return
     }
 
-    approvedPrompt = undefined
-
-    resetDraft()
-    queueMicrotask(async () => {
+    const finishSubmit = async () => {
+      approvedPrompt = undefined
+      resetDraft()
       if (await input.onSubmit(submit)) {
         push(next)
         if (shellMode) {
@@ -1226,7 +1237,29 @@ export function createPromptState(input: PromptInput): PromptState {
       }
 
       restore(next)
-    })
+    }
+
+    if (approvedPrompt !== next.text && !shellMode && !next.text.trimStart().startsWith("/")) {
+      input.onStatus("Checking prompt scope...")
+      checkingScope = true
+      queueMicrotask(async () => {
+        const result = await input.classifyPromptScope(next.text).catch(() => undefined)
+        checkingScope = false
+        input.onStatus("")
+        if (area && !area.isDestroyed && area.plainText !== next.text) return
+
+        const suggestion = learningScopeNudge(result)
+        if (suggestion) {
+          setScopeNudge({ prompt: clonePrompt(next), suggestion })
+          return
+        }
+
+        await finishSubmit()
+      })
+      return
+    }
+
+    queueMicrotask(finishSubmit)
   }
 
   const onSubmit = () => {

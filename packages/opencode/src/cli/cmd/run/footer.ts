@@ -54,6 +54,7 @@ import type {
   RunDiffStyle,
   RunInput,
   RunPrompt,
+  RunPromptScopeClassification,
   RunProvider,
   RunResource,
   RunTuiConfig,
@@ -95,6 +96,7 @@ type RunFooterOptions = {
   onInterrupt?: () => void
   onBackground?: () => void
   onEditorOpen: (input: { value: string }) => Promise<string | undefined>
+  classifyPromptScope: (text: string) => Promise<RunPromptScopeClassification | undefined>
   onExit?: () => void
   onSubagentSelect?: (sessionID: string | undefined) => void
   treeSitterClient?: TreeSitterClient
@@ -332,6 +334,7 @@ export class RunFooter implements FooterApi {
               onInterrupt: footer.handleInterrupt,
               onBackground: options.onBackground,
               onEditorOpen: options.onEditorOpen,
+              classifyPromptScope: options.classifyPromptScope,
               onInputClear: footer.handleInputClear,
               onExitRequest: footer.handleExit,
               onRequestExit: footer.setRequestExitHandler,

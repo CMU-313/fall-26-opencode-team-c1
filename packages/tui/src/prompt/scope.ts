@@ -3,6 +3,17 @@ export type PromptScopeInput = {
   mode?: "shell"
 }
 
+export type PromptScopeClassification =
+  | {
+      classification: "broad"
+      confidence: number
+      suggestion: string
+    }
+  | {
+      classification: "not_broad"
+      confidence: number
+    }
+
 const broadPatterns = [
   /\bdo\s+(?:my|this|the)\s+(?:whole|entire)\s+(?:assignment|project|homework)\b/,
   /\b(?:complete|finish)\s+(?:my|this|the)\s+(?:whole|entire)\s+(?:assignment|project|homework)\b/,
@@ -26,4 +37,13 @@ export function learningPromptSuggestion(text: string) {
   }
 
   return "Help me break this project into the first small step. Explain what I should inspect or build first and give one hint, but do not implement it."
+}
+
+export function learningScopeNudge(result: PromptScopeClassification | undefined) {
+  if (result?.classification !== "broad") return
+  if (!Number.isFinite(result.confidence) || result.confidence < 0.8) return
+
+  const suggestion = result.suggestion.trim()
+  if (!suggestion) return
+  return suggestion
 }
