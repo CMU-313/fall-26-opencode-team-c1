@@ -1,13 +1,21 @@
-export type PromptScopeClassification =
-  | {
-      classification: "broad"
-      confidence: number
-      suggestion: string
-    }
-  | {
-      classification: "not_broad"
-      confidence: number
-    }
+import { Schema } from "effect"
+
+const BroadClassification = Schema.Struct({
+  classification: Schema.Literal("broad"),
+  confidence: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(1)),
+  suggestion: Schema.String,
+})
+
+const NotBroadClassification = Schema.Struct({
+  classification: Schema.Literal("not_broad"),
+  confidence: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(1)),
+})
+
+export const PromptScopeClassification = Schema.Union([BroadClassification, NotBroadClassification]).annotate({
+  identifier: "PromptScopeClassification",
+})
+
+export type PromptScopeClassification = Schema.Schema.Type<typeof PromptScopeClassification>
 
 export function buildPromptScopeClassifierPrompt(text: string) {
   return [

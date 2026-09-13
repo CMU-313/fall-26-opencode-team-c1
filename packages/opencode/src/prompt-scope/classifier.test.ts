@@ -18,7 +18,7 @@ describe("parsePromptScopeClassification", () => {
         confidence: 0.55,
       },
     ],
-  ])("parses a valid result: %s", (input, expected) => {
+  ] as const)("parses a valid result: %s", (input, expected) => {
     expect(parsePromptScopeClassification(input)).toEqual(expected)
   })
 
