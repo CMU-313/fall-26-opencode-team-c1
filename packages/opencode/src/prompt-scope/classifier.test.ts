@@ -51,6 +51,18 @@ describe("buildPromptScopeClassifierPrompt", () => {
     expect(prompt).toContain("do my whole assignment")
     expect(prompt).toContain("add validation to the login form")
     expect(prompt).toContain("help with my project")
+    expect(prompt).toContain(
+      'Input: "Can you implement the feature defined in the README?"\nOutput: {"classification":"broad","confidence":0.85',
+    )
+    expect(prompt).toContain(
+      'Input: "Build the entire app described in the README."\nOutput: {"classification":"broad","confidence":0.98',
+    )
+    expect(prompt).toContain(
+      'Input: "Help me implement the first acceptance criterion in the README."\nOutput: {"classification":"not_broad","confidence":0.90}',
+    )
+    expect(prompt).toContain(
+      'Input: "Add the input validation described in the README."\nOutput: {"classification":"not_broad","confidence":0.92}',
+    )
     expect(prompt).toContain('Input: "Can you build my capstone?"')
   })
 
