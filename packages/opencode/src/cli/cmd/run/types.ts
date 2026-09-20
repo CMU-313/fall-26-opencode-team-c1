@@ -54,6 +54,10 @@ type RunResourceMap = NonNullable<Awaited<ReturnType<OpencodeClient["experimenta
 
 export type RunResource = RunResourceMap[string]
 
+export type RunPromptScopeClassification = NonNullable<
+  Awaited<ReturnType<OpencodeClient["promptScope"]["classify"]>>["data"]
+>
+
 export type RunInput = {
   sdk: OpencodeClient
   directory: string
@@ -177,6 +181,7 @@ export type FooterView =
 
 export type FooterPromptRoute =
   | { type: "composer" }
+  | { type: "scope-nudge" }
   | { type: "queued-menu" }
   | { type: "subagent-menu" }
   | { type: "subagent"; sessionID: string }

@@ -42,6 +42,7 @@ import { Todo } from "@/session/todo"
 import { SessionShare } from "@/share/session"
 import { ShareNext } from "@/share/share-next"
 import { Skill } from "@/skill"
+import { node as promptScopeClassifierNode } from "@/prompt-scope/service"
 import { Discovery } from "@/skill/discovery"
 import { Snapshot } from "@/snapshot"
 import { Storage } from "@/storage/storage"
@@ -94,6 +95,7 @@ import { permissionHandlers } from "./handlers/permission"
 import { projectHandlers } from "./handlers/project"
 import { projectCopyHandlers } from "./handlers/project-copy"
 import { providerHandlers } from "./handlers/provider"
+import { promptScopeHandlers } from "./handlers/prompt-scope"
 import { ptyConnectHandlers, ptyHandlers } from "./handlers/pty"
 import { questionHandlers } from "./handlers/question"
 import { sessionHandlers } from "./handlers/session"
@@ -164,6 +166,7 @@ const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
     questionHandlers,
     permissionHandlers,
     providerHandlers,
+    promptScopeHandlers,
     sessionHandlers,
     syncHandlers,
     tuiHandlers,
@@ -224,6 +227,7 @@ const app = LayerNode.group([
   Plugin.node,
   ModelsDev.node,
   Provider.node,
+  promptScopeClassifierNode,
   ProviderAuth.node,
   Agent.node,
   Skill.node,

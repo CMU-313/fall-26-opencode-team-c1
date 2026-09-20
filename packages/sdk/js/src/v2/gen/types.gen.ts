@@ -2486,6 +2486,23 @@ export type PermissionNotFoundError = {
   message: string
 }
 
+export type PromptScopeClassification =
+  | {
+      classification: "broad"
+      confidence: number
+      suggestion: string
+    }
+  | {
+      classification: "not_broad"
+      confidence: number
+    }
+
+export type ServiceUnavailableError = {
+  _tag: "ServiceUnavailableError"
+  message: string
+  service?: string
+}
+
 export type ProviderAuthMethod = {
   type: "oauth" | "api"
   label: string
@@ -2715,12 +2732,6 @@ export type ConflictError = {
   _tag: "ConflictError"
   message: string
   resource?: string
-}
-
-export type ServiceUnavailableError = {
-  _tag: "ServiceUnavailableError"
-  message: string
-  service?: string
 }
 
 export type MessageNotFoundError = {
@@ -9297,6 +9308,40 @@ export type PermissionReplyResponses = {
 }
 
 export type PermissionReplyResponse = PermissionReplyResponses[keyof PermissionReplyResponses]
+
+export type PromptScopeClassifyData = {
+  body?: {
+    text: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/prompt-scope/classify"
+}
+
+export type PromptScopeClassifyErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * ServiceUnavailableError
+   */
+  503: ServiceUnavailableError
+}
+
+export type PromptScopeClassifyError = PromptScopeClassifyErrors[keyof PromptScopeClassifyErrors]
+
+export type PromptScopeClassifyResponses = {
+  /**
+   * Prompt scope classification
+   */
+  200: PromptScopeClassification
+}
+
+export type PromptScopeClassifyResponse = PromptScopeClassifyResponses[keyof PromptScopeClassifyResponses]
 
 export type ProviderListData = {
   body?: never

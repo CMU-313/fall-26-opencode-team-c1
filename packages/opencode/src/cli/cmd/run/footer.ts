@@ -54,6 +54,7 @@ import type {
   RunDiffStyle,
   RunInput,
   RunPrompt,
+  RunPromptScopeClassification,
   RunProvider,
   RunResource,
   RunTuiConfig,
@@ -95,6 +96,7 @@ type RunFooterOptions = {
   onInterrupt?: () => void
   onBackground?: () => void
   onEditorOpen: (input: { value: string }) => Promise<string | undefined>
+  classifyPromptScope: (text: string) => Promise<RunPromptScopeClassification | undefined>
   onExit?: () => void
   onSubagentSelect?: (sessionID: string | undefined) => void
   treeSitterClient?: TreeSitterClient
@@ -109,6 +111,7 @@ const MODEL_ROWS = RUN_COMMAND_PANEL_ROWS
 const VARIANT_ROWS = RUN_COMMAND_PANEL_ROWS
 const NOTICE_DURATION = 3000
 const THEME_REFRESH_DELAYS = [1000, 1000] as const
+const PROMPT_SCOPE_NUDGE_ROWS = 14
 
 function createEmptySubagentState(): FooterSubagentState {
   return {
@@ -331,6 +334,7 @@ export class RunFooter implements FooterApi {
               onInterrupt: footer.handleInterrupt,
               onBackground: options.onBackground,
               onEditorOpen: options.onEditorOpen,
+              classifyPromptScope: options.classifyPromptScope,
               onInputClear: footer.handleInputClear,
               onExitRequest: footer.handleExit,
               onRequestExit: footer.setRequestExitHandler,
@@ -708,6 +712,8 @@ export class RunFooter implements FooterApi {
                 ? 1 + MODEL_ROWS
                 : this.promptRoute.type === "variant"
                   ? 1 + VARIANT_ROWS
+                  : this.promptRoute.type === "scope-nudge"
+                    ? this.base + PROMPT_SCOPE_NUDGE_ROWS
                   : this.promptRoute.type === "queued-menu"
                     ? 1 + this.subagentMenuRows
                     : this.promptRoute.type === "subagent-menu"

@@ -143,6 +143,8 @@ import type {
   ProjectUpdateErrors,
   ProjectUpdateResponses,
   PromptInput,
+  PromptScopeClassifyErrors,
+  PromptScopeClassifyResponses,
   ProviderAuthErrors,
   ProviderAuthResponses,
   ProviderListErrors,
@@ -3195,6 +3197,47 @@ export class Permission extends HeyApiClient {
         ...params.headers,
       },
     })
+  }
+}
+
+export class PromptScope extends HeyApiClient {
+  /**
+   * Classify prompt scope
+   *
+   * Classify an ambiguous learning prompt with an OpenCode small model. This endpoint does not create sessions or execute agents.
+   */
+  public classify<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      text?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "text" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<PromptScopeClassifyResponses, PromptScopeClassifyErrors, ThrowOnError>(
+      {
+        url: "/prompt-scope/classify",
+        ...options,
+        ...params,
+        headers: {
+          "Content-Type": "application/json",
+          ...options?.headers,
+          ...params.headers,
+        },
+      },
+    )
   }
 }
 
@@ -7185,6 +7228,11 @@ export class OpencodeClient extends HeyApiClient {
   private _permission?: Permission
   get permission(): Permission {
     return (this._permission ??= new Permission({ client: this.client }))
+  }
+
+  private _promptScope?: PromptScope
+  get promptScope(): PromptScope {
+    return (this._promptScope ??= new PromptScope({ client: this.client }))
   }
 
   private _provider?: Provider
