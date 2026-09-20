@@ -401,13 +401,16 @@ export function RunFooterView(props: RunFooterViewProps) {
 
   useKeyboard((event) => {
     if (!nudgingScope() || event.defaultPrevented) return
-
+    // when the scope-nudge prompt on is open "up" or "k" (up on vim) and "left" or "h" (left on vim) represent suggestion 
+    // because the suggestion button is before the send button and "up" and "left" keys would get you the first option
     if (["up", "k", "left", "h"].includes(event.name)) {
       setScopeNudgeSelection("suggestion")
       event.preventDefault()
       return
     }
-
+    // when the scope-nudge prompt on is open "down" or "j" (down on vim) and "right" or "l" (right on vim) represent send 
+    // because the send button is after the suggestion button and "up" and "left" keys would get you the second option. tab is 
+    // also included because conventionally tab would move you to the next option
     if (["down", "j", "right", "l", "tab"].includes(event.name)) {
       setScopeNudgeSelection("send")
       event.preventDefault()
