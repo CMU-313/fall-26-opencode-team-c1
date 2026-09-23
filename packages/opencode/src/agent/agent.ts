@@ -11,6 +11,7 @@ import { ProviderTransform } from "@/provider/transform"
 
 import PROMPT_GENERATE from "./generate.txt"
 import PROMPT_COMPACTION from "./prompt/compaction.txt"
+import PROMPT_DEBUG_COACH from "./prompt/debug-coach.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
@@ -261,6 +262,34 @@ const layer = Layer.effect(
               user,
             ),
             prompt: PROMPT_SUMMARY,
+          },
+          "debug-coach": {
+            name: "debug-coach",
+            description:
+              "Debugging coach for students. Requires you to predict the root cause, evaluates that prediction, and withholds the diagnosis until you have tried.",
+            prompt: PROMPT_DEBUG_COACH,
+            permission: Permission.merge(
+              defaults,
+              Permission.fromConfig({
+                // "*": "deny" must come first — later keys win, so allows above it get erased.
+                "*": "deny",
+                // The blanket deny wipes the .env guard from `defaults`, so restate it.
+                read: {
+                  "*": "allow",
+                  "*.env": "ask",
+                  "*.env.*": "ask",
+                  "*.env.example": "allow",
+                },
+                grep: "allow",
+                glob: "allow",
+                question: "allow",
+                external_directory: readonlyExternalDirectory,
+              }),
+              user,
+            ),
+            options: {},
+            mode: "primary",
+            native: true,
           },
         }
 
