@@ -271,7 +271,7 @@ const layer = Layer.effect(
             permission: Permission.merge(
               defaults,
               Permission.fromConfig({
-                // "*": "deny" must come first — later keys win, so allows above it get erased.
+                // "*": "deny" must stay first: later keys win, so allows above it get erased.
                 "*": "deny",
                 // The blanket deny wipes the .env guard from `defaults`, so restate it.
                 read: {
