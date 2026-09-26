@@ -14,6 +14,7 @@ import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
+import PROMPT_TUTOR from "./prompt/tutor.txt"
 import { Permission } from "@/permission"
 import { mergeDeep, pipe, sortBy, values } from "remeda"
 import { Global } from "@opencode-ai/core/global"
@@ -176,6 +177,35 @@ const layer = Layer.effect(
               }),
               user,
             ),
+            mode: "primary",
+            native: true,
+          },
+          tutor: {
+            name: "tutor",
+            description: "Tutor for students. Explains and asks guiding questions instead of editing code.",
+            prompt: PROMPT_TUTOR,
+            permission: Permission.merge(
+              defaults,
+              Permission.fromConfig({
+                // "*": "deny" must stay first: later keys win (Permission.evaluate uses findLast),
+                // so any allow listed above it would be erased.
+                "*": "deny",
+                // The deny above wipes the .env guard `defaults` installs, so restate it here. A flat
+                // read: "allow" would leave .env readable -- the hole `explore` has today.
+                read: {
+                  "*": "allow",
+                  "*.env": "ask",
+                  "*.env.*": "ask",
+                  "*.env.example": "allow",
+                },
+                grep: "allow",
+                glob: "allow",
+                question: "allow",
+                external_directory: readonlyExternalDirectory,
+              }),
+              user,
+            ),
+            options: {},
             mode: "primary",
             native: true,
           },
