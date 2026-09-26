@@ -52,6 +52,24 @@ const provider = {
 }
 
 describe("Config", () => {
+  it.effect("keeps walkthrough off by default and preserves opt-in through v1 migration", () =>
+    Effect.sync(() => {
+      expect(Schema.decodeUnknownSync(Config.Info)({}).walkthrough).toBeUndefined()
+      expect(Schema.decodeUnknownSync(Config.Info)({ walkthrough: true }).walkthrough).toBe(true)
+      const legacy = Schema.decodeUnknownSync(ConfigV1.Info)({ walkthrough: true, snapshot: false })
+      expect(Schema.decodeUnknownSync(Config.Info)(ConfigMigrateV1.migrate(legacy)).walkthrough).toBe(true)
+      expect(
+        Config.latest(
+          [
+            new Config.Document({ type: "document", info: new Config.Info({ walkthrough: true }) }),
+            new Config.Document({ type: "document", info: new Config.Info({ walkthrough: false }) }),
+          ],
+          "walkthrough",
+        ),
+      ).toBe(false)
+    }),
+  )
+
   it.effect("returns the latest defined scalar from priority-ordered documents", () =>
     Effect.sync(() => {
       const entries = [
