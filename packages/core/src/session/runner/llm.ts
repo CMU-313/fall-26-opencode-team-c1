@@ -256,6 +256,8 @@ const layer = Layer.effect(
               return
             }
             needsContinuation = true
+            // Preserve provider call order when tracking reads for the first edit.
+            if (gate) yield* awaitToolFibers(toolFibers)
             const assistantMessageID = yield* publisher.assistantMessageID(event.id)
             const input = { sessionID: session.id, agent: agent.id, assistantMessageID, call: event }
             yield* Effect.uninterruptibleMask((restore) =>
