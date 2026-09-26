@@ -58,6 +58,7 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Schema, Stream } from "effect"
 import { asc, eq } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
+import { tmpdir } from "./fixture/tmpdir"
 
 const requests: LLMRequest[] = []
 let response: LLMEvent[] = []
@@ -208,6 +209,7 @@ const skillGuidance = Layer.mock(SkillGuidance.Service, {
     ),
 })
 const referenceGuidance = Layer.mock(ReferenceGuidance.Service, { load: () => Effect.succeed(SystemContext.empty) })
+let walkthroughEnabled = false
 const config = Layer.succeed(
   Config.Service,
   Config.Service.of({
@@ -216,6 +218,7 @@ const config = Layer.succeed(
         new Config.Document({
           type: "document",
           info: new Config.Info({
+            walkthrough: walkthroughEnabled,
             compaction: new ConfigCompaction.Info({
               buffer: 3_000,
               keep: new ConfigCompaction.Keep({ tokens: 1_000 }),
@@ -312,6 +315,8 @@ const insertSession = (id: SessionV2.ID) =>
 const setup = Effect.gen(function* () {
   const { db } = yield* Database.Service
   response = []
+  requests.length = 0
+  walkthroughEnabled = false
   systemBaseline = "Initial context"
   systemRemoved = false
   systemUnavailable = false
@@ -555,6 +560,153 @@ const verifyPartialFlushOnInterruption = (kind: FragmentKind) =>
   })
 
 describe("SessionRunnerLLM", () => {
+  for (const mode of ["continue", "cancel", "followup", "batched", "reads-only", "disabled", "other-agent"] as const)
+    it.effect(`walkthrough integration: ${mode}`, () =>
+      Effect.gen(function* () {
+        yield* setup
+        walkthroughEnabled = mode !== "disabled"
+        const directory = yield* Effect.acquireRelease(Effect.promise(tmpdir), (dir) =>
+          Effect.promise(() => dir[Symbol.asyncDispose]()),
+        )
+        const files = ["main.ts", "config.ts", "main.test.ts"]
+        yield* Effect.promise(() => Promise.all(files.map((file) => Bun.write(`${directory.path}/${file}`, file))))
+        const git = (...args: string[]) => Bun.spawnSync(["git", ...args], { cwd: directory.path })
+        expect(git("init").exitCode).toBe(0)
+        expect(git("add", ".").exitCode).toBe(0)
+        expect(
+          git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "fixture").exitCode,
+        ).toBe(0)
+        const session = yield* SessionV2.Service
+        const registry = yield* ToolRegistry.Service
+        const questions = yield* QuestionV2.Service
+        const writes: string[] = []
+        yield* registry.register({
+          read: Tool.make({
+            description: "Read a fixture file",
+            input: Schema.Struct({ path: Schema.String }),
+            output: Schema.Struct({ content: Schema.String }),
+            execute: (input) =>
+              Effect.promise(() => Bun.file(`${directory.path}/${input.path}`).text()).pipe(
+                Effect.map((content) => ({ content })),
+              ),
+          }),
+          write: Tool.make({
+            description: "Write a fixture file",
+            input: Schema.Struct({ path: Schema.String }),
+            output: Schema.String,
+            execute: (input) =>
+              Effect.promise(async () => {
+                writes.push(input.path)
+                await Bun.write(`${directory.path}/${input.path}`, "changed")
+                return "written"
+              }),
+          }),
+        })
+        yield* session.prompt({
+          sessionID,
+          prompt: Prompt.make({ text: "Inspect the three files, then fix the startup code." }),
+          resume: false,
+        })
+        if (mode === "other-agent") {
+          const agents = yield* AgentV2.Service
+          yield* agents.transform((editor) =>
+            editor.update(AgentV2.ID.make("general"), (agent) => {
+              agent.system = "General agent"
+            }),
+          )
+          const events = yield* EventV2.Service
+          yield* events.publish(SessionEvent.AgentSwitched, {
+            sessionID,
+            messageID: SessionMessage.ID.create(),
+            timestamp: DateTime.makeUnsafe(1),
+            agent: "general",
+          })
+        }
+        const walkthrough = files.map((path) => ({ path, explanation: `${path} supports the startup fix.` }))
+        const write = (id: string, extra = {}) =>
+          LLMEvent.toolCall({
+            id,
+            name: "write",
+            input: { path: files[0], walkthrough, ...extra },
+          })
+        const turn = (...calls: LLMEvent[]) => [
+          LLMEvent.stepStart({ index: 0 }),
+          ...calls,
+          LLMEvent.stepFinish({ index: 0, reason: calls.length ? "tool-calls" : "stop" }),
+          LLMEvent.finish({ reason: calls.length ? "tool-calls" : "stop" }),
+        ]
+        requests.length = 0
+        responses = [
+          turn(
+            ...files.map((path, i) => LLMEvent.toolCall({ id: `read-${i}`, name: "read", input: { path } })),
+            ...(mode === "batched" ? [write("first")] : []),
+          ),
+          ...(mode === "reads-only" ? [] : [turn(...(mode === "batched" ? [] : [write("first")]), write("queued"))]),
+          ...(mode === "followup"
+            ? [
+                turn(
+                  write("retry", { walkthrough_answer: "main.ts starts the app, so its initialization needs fixing." }),
+                ),
+              ]
+            : []),
+          turn(),
+        ]
+        const run = yield* session.resume(sessionID).pipe(Effect.exit, Effect.forkChild)
+        if (["continue", "cancel", "followup", "batched"].includes(mode)) {
+          let pending = yield* questions.list()
+          while (!pending.length) {
+            yield* Effect.yieldNow
+            pending = yield* questions.list()
+          }
+          expect(writes).toEqual([])
+          expect(git("status", "--porcelain").stdout.toString()).toBe("")
+          for (const file of files) expect(pending[0].questions[0].question).toContain(file)
+          yield* questions.reply({
+            requestID: pending[0].id,
+            answers: [[mode === "cancel" ? "Cancel" : mode === "followup" ? "Why main.ts?" : "Continue"]],
+          })
+          if (mode === "followup") {
+            pending = yield* questions.list()
+            while (!pending.length) {
+              yield* Effect.yieldNow
+              pending = yield* questions.list()
+            }
+            expect(writes).toEqual([])
+            expect(git("status", "--porcelain").stdout.toString()).toBe("")
+            expect(pending[0].questions[0].question).toContain("Answer: main.ts starts the app")
+            yield* questions.reply({ requestID: pending[0].id, answers: [["Continue"]] })
+          }
+        }
+        const result = yield* Fiber.join(run)
+        expect(result._tag).toBe(mode === "cancel" ? "Failure" : "Success")
+        expect(writes).toHaveLength(mode === "cancel" || mode === "reads-only" ? 0 : mode === "followup" ? 1 : 2)
+        expect(yield* questions.list()).toEqual([])
+        if (mode === "cancel") {
+          expect(git("status", "--porcelain").stdout.toString()).toBe("")
+          expect(requests).toHaveLength(2)
+        }
+        const definition = requests[0].tools?.find((tool) => tool.name === "write")
+        expect("walkthrough" in (definition!.inputSchema.properties as object)).toBe(
+          !["disabled", "other-agent"].includes(mode),
+        )
+        if (mode !== "continue") return
+        // A new user request must not inherit approval or reads from the previous one.
+        yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Make another change." }), resume: false })
+        responses = [turn(write("next", { walkthrough: [] })), turn()]
+        const next = yield* session.resume(sessionID).pipe(Effect.forkChild)
+        let pending = yield* questions.list()
+        while (!pending.length) {
+          yield* Effect.yieldNow
+          pending = yield* questions.list()
+        }
+        expect(writes).toHaveLength(2)
+        expect(pending[0].questions[0].question).toContain("No files have been read")
+        yield* questions.reply({ requestID: pending[0].id, answers: [["Continue"]] })
+        yield* Fiber.join(next)
+        expect(writes).toHaveLength(3)
+      }),
+    )
+
   it.effect("advertises and executes a globally attached application tool", () =>
     Effect.gen(function* () {
       yield* setup

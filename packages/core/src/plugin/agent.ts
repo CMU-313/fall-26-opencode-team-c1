@@ -12,6 +12,15 @@ const TRUNCATION_GLOB = path.join(Global.Path.data, "tool-output", "*")
 const BUILD_SYSTEM =
   "You are an AI coding agent. Help the user accomplish software engineering tasks by inspecting the workspace, making targeted changes, and using tools according to the configured permissions."
 
+export const WALKTHROUGH_PROMPT = `Codebase walkthrough mode is enabled for this request.
+Before your first edit, write, or apply_patch, include a walkthrough array in that tool call.
+List every file successfully inspected with read during this request, once each, as {path, explanation}.
+Each explanation must be one line describing what the file does and why it matters to the planned change.
+Use an empty array if you have not read any files. Do not invent inspected files.
+The runner will show the walkthrough and wait for the student before executing the edit.
+If the student asks a follow-up, retry with walkthrough_answer answering it and the complete walkthrough.
+Do not use bash, tasks, or other tools to bypass this pause. Requests needing no edits need no walkthrough.`
+
 const PROMPT_EXPLORE = `You are a file search specialist. You excel at thoroughly navigating and exploring codebases.
 
 Your strengths:
