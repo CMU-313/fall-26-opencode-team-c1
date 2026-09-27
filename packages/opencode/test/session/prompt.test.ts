@@ -2440,3 +2440,85 @@ noLLMServer.instance(
     }),
   30_000,
 )
+
+const walkthroughEdit = Effect.fn("test.walkthroughEdit")(function* (answer: string) {
+  const { dir, llm } = yield* useServerConfig((url) => ({ ...providerCfg(url), walkthrough: true }))
+  const prompt = yield* SessionPrompt.Service
+  const sessions = yield* Session.Service
+  const question = yield* Question.Service
+  const session = yield* sessions.create({
+    title: "Walkthrough",
+    permission: [{ permission: "*", pattern: "*", action: "allow" }],
+  })
+  const files = ["main.ts", "config.ts", "main.test.ts"].map((name) => path.join(dir, name))
+  yield* Effect.forEach(files, (file) => writeText(file, "export const value = 1\n"))
+  yield* prompt.prompt({
+    sessionID: session.id,
+    agent: "build",
+    noReply: true,
+    parts: [{ type: "text", text: "rename value" }],
+  })
+  yield* Effect.forEach(files, (file) => llm.tool("read", { filePath: file }))
+  yield* llm.tool("edit", {
+    filePath: files[0],
+    oldString: "value",
+    newString: "total",
+    walkthrough: files.map((file) => ({ path: file, explanation: "Defines the value." })),
+  })
+  yield* llm.text("done")
+
+  const fiber = yield* prompt.loop({ sessionID: session.id }).pipe(Effect.forkChild)
+  const request = yield* pollWithTimeout(
+    question.list().pipe(Effect.map((list) => list[0])),
+    "timed out waiting for walkthrough",
+  )
+  const before = yield* Effect.promise(() => Bun.file(files[0]).text())
+  yield* question.reply({ requestID: request.id, answers: [[answer]] })
+  yield* Fiber.await(fiber)
+  const after = yield* Effect.promise(() => Bun.file(files[0]).text())
+  return { files, request, before, after, calls: yield* llm.calls }
+})
+
+it.instance("walkthrough names every read file before the first edit", () =>
+  Effect.gen(function* () {
+    const result = yield* walkthroughEdit("Continue")
+    const question = result.request.questions[0].question
+    expect(question).toStartWith("Codebase walkthrough")
+    result.files.forEach((file) => expect(question).toContain(`${path.basename(file)} — Defines the value.`))
+    expect(question).not.toContain(path.dirname(result.files[0]))
+    expect(result.before).toContain("value")
+    expect(result.after).toContain("total")
+  }),
+)
+
+it.instance("walkthrough cancel ends the request without editing", () =>
+  Effect.gen(function* () {
+    const result = yield* walkthroughEdit("Cancel")
+    expect(result.after).toBe(result.before)
+    expect(result.calls).toBe(4)
+  }),
+)
+
+it.instance("walkthrough stays quiet when a request only reads", () =>
+  Effect.gen(function* () {
+    const { dir, llm } = yield* useServerConfig((url) => ({ ...providerCfg(url), walkthrough: true }))
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const question = yield* Question.Service
+    const session = yield* sessions.create({ title: "Walkthrough reads" })
+    const file = path.join(dir, "main.ts")
+    yield* writeText(file, "export const value = 1\n")
+    yield* prompt.prompt({
+      sessionID: session.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "explain main.ts" }],
+    })
+    yield* llm.tool("read", { filePath: file })
+    yield* llm.text("done")
+
+    yield* prompt.loop({ sessionID: session.id })
+    expect(yield* llm.calls).toBe(2)
+    expect(yield* question.list()).toHaveLength(0)
+  }),
+)

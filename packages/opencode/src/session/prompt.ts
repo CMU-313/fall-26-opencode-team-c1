@@ -55,6 +55,9 @@ import { eq } from "drizzle-orm"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionReminders } from "./reminders"
 import { SessionTools } from "./tools"
+import { SessionWalkthrough } from "./walkthrough"
+import { Question } from "@/question"
+import { AgentPlugin } from "@opencode-ai/core/plugin/agent"
 import { LLMEvent } from "@opencode-ai/llm"
 
 // @ts-ignore
@@ -140,6 +143,7 @@ const layer = Layer.effect(
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
     const database = yield* Database.Service
+    const question = yield* Question.Service
     const { db } = database
     const ops = Effect.fn("SessionPrompt.ops")(function* () {
       return {
@@ -1084,6 +1088,7 @@ const layer = Layer.effect(
         let structured: unknown
         let step = 0
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
+        const walkthrough = SessionWalkthrough.make(ctx.directory, question)
 
         while (true) {
           yield* status.set(sessionID, { type: "busy" })
@@ -1239,6 +1244,8 @@ const layer = Layer.effect(
               Effect.provideService(Truncate.Service, truncate),
               Effect.provideService(RuntimeFlags.Service, flags),
             )
+            const gated = agent.name === "build" && (yield* config.get()).walkthrough === true
+            if (gated) yield* walkthrough(tools, { user: lastUser.id, sessionID, messageID: handle.message.id })
 
             if (lastUser.format?.type === "json_schema") {
               tools["StructuredOutput"] = createStructuredOutputTool({
@@ -1266,6 +1273,7 @@ const layer = Layer.effect(
               ...instructions,
               ...(mcpInstructions ? [mcpInstructions] : []),
               ...(skills ? [skills] : []),
+              ...(gated ? [AgentPlugin.WALKTHROUGH_PROMPT] : []),
             ]
             const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
@@ -1625,6 +1633,7 @@ export const node = LayerNode.make({
     EventV2Bridge.node,
     RuntimeFlags.node,
     Database.node,
+    Question.node,
   ],
 })
 

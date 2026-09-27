@@ -8,7 +8,7 @@ import type { ToolRegistry } from "../../tool/registry"
 
 const edits = new Set(["edit", "write", "apply_patch"])
 const line = Schema.String.check(Schema.isPattern(/^[^\r\n]*\S[^\r\n]*$/))
-const Input = Schema.Struct({
+export const Input = Schema.Struct({
   walkthrough: Schema.Array(Schema.Struct({ path: line, explanation: line })),
   walkthrough_answer: line.pipe(Schema.optional),
 })
