@@ -218,6 +218,71 @@ it.instance(
   },
 )
 
+it.instance("debug-coach agent is registered as a visible primary agent", () =>
+  Effect.gen(function* () {
+    const agents = yield* load((svc) => svc.list())
+    const agent = agents.find((a) => a.name === "debug-coach")
+    expect(agent).toBeDefined()
+    expect(agent?.mode).toBe("primary")
+    expect(agent?.hidden).toBeUndefined()
+    expect(agent?.prompt).toBeDefined()
+  }),
+)
+
+it.instance("debug-coach agent denies the tools that would let it patch the bug", () =>
+  Effect.gen(function* () {
+    const coach = yield* load((svc) => svc.get("debug-coach"))
+    expect(coach).toBeDefined()
+    expect(coach?.mode).toBe("primary")
+    expect(evalPerm(coach, "edit")).toBe("deny")
+    expect(evalPerm(coach, "write")).toBe("deny")
+    expect(evalPerm(coach, "apply_patch")).toBe("deny")
+    expect(evalPerm(coach, "bash")).toBe("deny")
+  }),
+)
+
+it.instance("debug-coach agent allows the read-only tools it needs to guide the student", () =>
+  Effect.gen(function* () {
+    const coach = yield* load((svc) => svc.get("debug-coach"))
+    expect(coach).toBeDefined()
+    expect(evalPerm(coach, "read")).toBe("allow")
+    expect(evalPerm(coach, "grep")).toBe("allow")
+    expect(evalPerm(coach, "glob")).toBe("allow")
+    expect(evalPerm(coach, "question")).toBe("allow")
+  }),
+)
+
+it.instance("debug-coach agent keeps the .env read guard despite its blanket deny", () =>
+  Effect.gen(function* () {
+    const coach = yield* load((svc) => svc.get("debug-coach"))
+    expect(coach).toBeDefined()
+    expect(Permission.evaluate("read", "foo.env", coach!.permission).action).toBe("ask")
+    expect(Permission.evaluate("read", "foo.env.example", coach!.permission).action).toBe("allow")
+  }),
+)
+
+it.instance("debug-coach agent cannot hand editing off to a subagent", () =>
+  Effect.gen(function* () {
+    const coach = yield* load((svc) => svc.get("debug-coach"))
+    expect(coach).toBeDefined()
+    expect(evalPerm(coach, "task")).toBe("deny")
+    expect(Permission.evaluate("task", "general", coach!.permission).action).toBe("deny")
+    expect(Permission.evaluate("task", "build", coach!.permission).action).toBe("deny")
+  }),
+)
+
+it.instance("debug-coach prompt still contains the behaviors the agent promises", () =>
+  Effect.gen(function* () {
+    const coach = yield* load((svc) => svc.get("debug-coach"))
+    const prompt = coach?.prompt ?? ""
+    expect(prompt).toContain("# Require a prediction first")
+    expect(prompt).toContain("# Evaluate the prediction they gave")
+    expect(prompt).toContain("# Reveal after several rounds")
+    expect(prompt).toContain("# Bypass")
+    expect(prompt).toContain("# Never write the fix")
+  }),
+)
+
 it.instance("general agent denies todo tools", () =>
   Effect.gen(function* () {
     const general = yield* load((svc) => svc.get("general"))
@@ -807,6 +872,7 @@ it.instance(
       agent: {
         build: { disable: true },
         plan: { disable: true },
+        "debug-coach": { disable: true },
         tutor: { disable: true },
       },
     },
