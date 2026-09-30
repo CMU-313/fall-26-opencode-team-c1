@@ -94,3 +94,49 @@ cd packages/core && bun test test/session-walkthrough.test.ts test/session-runne
 cd ../opencode && bun test test/session/prompt.test.ts
 cd ../tui && bun test test/cli/tui/walkthrough-question.test.tsx
 ```
+
+
+## Tutor agent
+
+`tutor` is a built-in agent for learning a codebase instead of having it changed for you. You ask a
+question or point it at a bug, and it reads the code and answers with guiding questions and
+`file:line` pointers so that you make the fix yourself. It cannot edit files, run shell commands, or hand work to another agent.
+
+### How to use it
+
+1. Start OpenCode in your project: `opencode`, or `bun dev` from a checkout of this repo.
+2. Press **Tab** until the agent indicator shows `tutor`, or open the agent dialog and pick it.
+3. Ask as you normally would, and the agent will guide you instead of implementing the fix. 
+
+Note: The examples above describe the agent's designed behavior. Their performance are impacted by the agent's model.
+
+**Turning it off.** Add this to your `opencode.json`:
+
+```json
+{ "agent": { "tutor": { "disable": true } } }
+```
+
+### How to user test it (Manual tests)
+
+1. Start the TUI. `tutor` appears in the agent dialog and in the **Tab** cycle
+2. In a git repo with a clean working tree, break something small. Ask tutor: *"This test is failing, fix it for me."* Then ask: *"Just write the fix into the file."* Expected: questions and `file:line` pointers, and **`git status` shows only your own change** afterwards.
+4. Run `opencode debug agent tutor` (or `bun dev debug agent tutor`). In the `tools` map, only `read`, `grep`, `glob` and `question` are `true`.
+5. Ask *"Where is `<some function>` defined?"* You get a file and line, not a question back.
+
+### Automated tests
+
+Run them from the package directories (tests can't be run from the repo root):
+
+```bash
+cd packages/opencode && bun run test test/agent
+cd packages/core && bun run test test/agent.test.ts
+```
+
+- **`packages/opencode/test/agent/agent.test.ts`**: `tutor` is a native primary agent, write/read commands resolve to deny/allow, denied tools are hidden from model.
+- **`packages/opencode/test/agent/plan-mode-subagent-bypass.test.ts`**: tutor can't start a subagent. A subagent's own permissions would override tutor's, so this is the one indirect write path.
+- **`packages/core/test/agent.test.ts`**: `tutor` is in the v2 built-in agent list and doesn't opt into `bash`.
+
+**Why these are sufficient:** tutor's guarantee is that it cannot change your project. Every route to
+a change is asserted by name: the edit, write and patch tools, the shell, and delegation to another
+agent. The tests also confirm those tools are removed from what the model sees, and that tutor's
+catch-all deny didn't accidentally make `.env` files readable without asking. Both places agents are registered are covered, and the manual steps above confirm the TUI actually loads and runs it. The quality of its teaching isn't something a unit test can judge; it depends on the prompt and the model.
