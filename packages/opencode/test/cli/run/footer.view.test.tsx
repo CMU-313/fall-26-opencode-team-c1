@@ -380,12 +380,13 @@ test("mini composer renders a scope nudge and suggestion before submitting a bro
 })
 
 test.each([
-  ["shell", { text: "build the full app", parts: [], mode: "shell" }],
-  ["slash command", { text: "/build the full app", parts: [] }],
-] as const)("mini composer submits a broad-looking %s without a scope nudge", async (_kind, next) => {
+  ["shell", () => ({ text: "build the full app", parts: [], mode: "shell" }) satisfies RunPrompt],
+  ["slash command", () => ({ text: "/build the full app", parts: [] }) satisfies RunPrompt],
+] as const)("mini composer submits a broad-looking %s without a scope nudge", async (_kind, createPrompt) => {
   let prompt: PromptState | undefined
   const submits: RunPrompt[] = []
   const classifications: string[] = []
+  const next = createPrompt()
 
   function Composer() {
     prompt = createPromptState({
