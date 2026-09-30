@@ -26,8 +26,18 @@ import {
 import { OPENCODE_BASE_MODE, useBindings } from "@opencode-ai/tui/keymap"
 import { realignEditorPromptParts, resolveEditorSlashValue } from "./prompt.editor"
 import { FOOTER_MENU_ROWS, createFooterMenuState, type RunFooterMenuItem } from "./footer.menu"
+import { isUnmistakablyBroadPrompt, learningPromptSuggestion, learningScopeNudge } from "@opencode-ai/tui/prompt/scope"
 import type { RunFooterTheme } from "./theme"
-import type { FooterState, RunAgent, RunCommand, RunPrompt, RunPromptPart, RunResource, RunTuiConfig } from "./types"
+import type {
+  FooterState,
+  RunAgent,
+  RunCommand,
+  RunPrompt,
+  RunPromptPart,
+  RunPromptScopeClassification,
+  RunResource,
+  RunTuiConfig,
+} from "./types"
 
 const AUTOCOMPLETE_ROWS = FOOTER_MENU_ROWS
 const AUTOCOMPLETE_BOTTOM_ROWS = 1
@@ -72,6 +82,7 @@ type PromptInput = {
   onCycle: () => void
   onInterrupt: () => boolean
   onEditorOpen: (input: { value: string }) => Promise<string | undefined>
+  classifyPromptScope: (text: string) => Promise<RunPromptScopeClassification | undefined>
   onInputClear: () => void
   onExitRequest?: () => boolean
   onExit: () => void
@@ -88,7 +99,11 @@ export type PromptState = {
   selected: Accessor<number>
   offset: Accessor<number>
   rows: Accessor<number>
+  scopeNudge: Accessor<{ prompt: RunPrompt; suggestion: string } | undefined>
   requestExit: () => boolean
+  useScopeSuggestion: () => void
+  sendScopeNudgeAnyway: () => void
+  dismissScopeNudge: () => void
   onSubmit: () => void
   submitText: (text: string) => void
   openEditor: (input?: { value?: string }) => Promise<void>
@@ -306,6 +321,9 @@ export function createPromptState(input: PromptInput): PromptState {
   const [mode, setMode] = createSignal<MenuMode>(false)
   const [at, setAt] = createSignal(0)
   const [query, setQuery] = createSignal("")
+  const [scopeNudge, setScopeNudge] = createSignal<{ prompt: RunPrompt; suggestion: string }>()
+  let approvedPrompt: string | undefined
+  let checkingScope = false
   const visible = createMemo(() => mode() !== false)
 
   const setShellMode = (value: boolean) => {
@@ -1161,6 +1179,7 @@ export function createPromptState(input: PromptInput): PromptState {
   }
 
   const submitPrompt = (next: RunPrompt) => {
+    if (checkingScope) return
     if (!area || area.isDestroyed) {
       draft = clonePrompt(next)
     }
@@ -1200,9 +1219,14 @@ export function createPromptState(input: PromptInput): PromptState {
         ? { ...next, command: parsed.command }
         : next
     const shellMode = next.mode === "shell"
+    if (approvedPrompt !== next.text && isUnmistakablyBroadPrompt(next)) {
+      setScopeNudge({ prompt: clonePrompt(next), suggestion: learningPromptSuggestion(next.text) })
+      return
+    }
 
-    resetDraft()
-    queueMicrotask(async () => {
+    const finishSubmit = async () => {
+      approvedPrompt = undefined
+      resetDraft()
       if (await input.onSubmit(submit)) {
         push(next)
         if (shellMode) {
@@ -1213,7 +1237,29 @@ export function createPromptState(input: PromptInput): PromptState {
       }
 
       restore(next)
-    })
+    }
+
+    if (approvedPrompt !== next.text && !shellMode && !next.text.trimStart().startsWith("/")) {
+      input.onStatus("Checking prompt scope...")
+      checkingScope = true
+      queueMicrotask(async () => {
+        const result = await input.classifyPromptScope(next.text).catch(() => undefined)
+        checkingScope = false
+        input.onStatus("")
+        if (area && !area.isDestroyed && area.plainText !== next.text) return
+
+        const suggestion = learningScopeNudge(result)
+        if (suggestion) {
+          setScopeNudge({ prompt: clonePrompt(next), suggestion })
+          return
+        }
+
+        await finishSubmit()
+      })
+      return
+    }
+
+    queueMicrotask(finishSubmit)
   }
 
   const onSubmit = () => {
@@ -1223,6 +1269,25 @@ export function createPromptState(input: PromptInput): PromptState {
 
   const submitText = (text: string) => {
     submitPrompt({ text, parts: [] })
+  }
+
+  const useScopeSuggestion = () => {
+    const nudge = scopeNudge()
+    if (!nudge) return
+    setScopeNudge()
+    restore({ text: nudge.suggestion, parts: [] })
+  }
+
+  const sendScopeNudgeAnyway = () => {
+    const nudge = scopeNudge()
+    if (!nudge) return
+    approvedPrompt = nudge.prompt.text
+    setScopeNudge()
+    submitPrompt(nudge.prompt)
+  }
+
+  const dismissScopeNudge = () => {
+    setScopeNudge()
   }
 
   onCleanup(() => {
@@ -1288,7 +1353,11 @@ export function createPromptState(input: PromptInput): PromptState {
     selected: menu.selected,
     offset: menu.offset,
     rows: menu.rows,
+    scopeNudge,
     requestExit,
+    useScopeSuggestion,
+    sendScopeNudgeAnyway,
+    dismissScopeNudge,
     onSubmit,
     submitText,
     openEditor,

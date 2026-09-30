@@ -266,6 +266,10 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
 
       await ctx.sdk.question.reject(next)
     },
+    classifyPromptScope: async (text) => {
+      const response = await ctx.sdk.promptScope.classify({ text, directory: ctx.directory })
+      return response.data
+    },
     onCycleVariant: () => {
       if (!state.model || state.variants.length === 0) {
         return {
