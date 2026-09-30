@@ -17,6 +17,7 @@ import {
   RunVariantSelectBody,
 } from "@/cli/cmd/run/footer.command"
 import { RunFooterView } from "@/cli/cmd/run/footer.view"
+import { createPromptState, type PromptState } from "@/cli/cmd/run/footer.prompt"
 import { RunEntryContent } from "@/cli/cmd/run/scrollback.writer"
 import { RUN_THEME_FALLBACK, type RunTheme } from "@/cli/cmd/run/theme"
 import type {
@@ -286,6 +287,331 @@ function panelMenu(root: BoxRenderable | RootRenderable) {
   const content = child(panel, 0)
   return child(content.getChildren().at(-1) as BoxRenderable, 0)
 }
+
+test("mini composer classifies ambiguous prompts before submitting", async () => {
+  let prompt: PromptState | undefined
+  const events: string[] = []
+
+  function Composer() {
+    prompt = createPromptState({
+      directory: "/tmp",
+      findFiles: async () => [],
+      agents: () => [],
+      resources: () => [],
+      commands: () => [],
+      tuiConfig,
+      state: footerState(),
+      view: () => "prompt",
+      prompt: () => true,
+      width: () => 100,
+      theme: () => RUN_THEME_FALLBACK.footer,
+      onSubmit: async (next) => {
+        events.push(`submit:${next.text}`)
+        return true
+      },
+      onCycle: () => {},
+      onInterrupt: () => false,
+      onEditorOpen: async () => undefined,
+      classifyPromptScope: async (text) => {
+        events.push(`classify:${text}`)
+        return {
+          classification: "not_broad",
+          confidence: 0.9,
+        }
+      },
+      onInputClear: () => {},
+      onExit: () => {},
+      onSkillMenu: () => {},
+      onRows: () => {},
+      onStatus: () => {},
+    })
+    return <box />
+  }
+
+  function Harness() {
+    const renderer = useRenderer()
+    const keymap = createDefaultOpenTuiKeymap(renderer)
+    return (
+      <OpencodeKeymapProvider keymap={keymap}>
+        <Composer />
+      </OpencodeKeymapProvider>
+    )
+  }
+
+  const app = await testRender(() => <Harness />, { width: 100, height: 8, kittyKeyboard: true })
+  try {
+    prompt!.submitText("can you do basically this whole project for me")
+    await Bun.sleep(0)
+
+    expect(prompt!.scopeNudge()).toBeUndefined()
+    expect(events).toEqual([
+      "classify:can you do basically this whole project for me",
+      "submit:can you do basically this whole project for me",
+    ])
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("mini composer renders a scope nudge and suggestion before submitting a broad prompt", async () => {
+  const submits: RunPrompt[] = []
+  const app = await renderFooter({
+    height: 20,
+    onSubmit: (prompt) => {
+      submits.push(prompt)
+      return true
+    },
+  })
+
+  try {
+    "do my whole project".split("").forEach((key) => app.mockInput.pressKey(key))
+    app.mockInput.pressEnter()
+    await app.renderOnce()
+
+    const frame = app.captureCharFrame()
+    expect(frame).toContain("This request may be too broad")
+    expect(frame).toContain("Help me break this project into the first small step")
+    expect(frame).toContain("Use suggestion")
+    expect(frame).toContain("Ask anyway")
+    expect(submits).toEqual([])
+  } finally {
+    app.cleanup()
+  }
+})
+
+test.each([
+  ["shell", () => ({ text: "build the full app", parts: [], mode: "shell" }) satisfies RunPrompt],
+  ["slash command", () => ({ text: "/build the full app", parts: [] }) satisfies RunPrompt],
+] as const)("mini composer submits a broad-looking %s without a scope nudge", async (_kind, createPrompt) => {
+  let prompt: PromptState | undefined
+  const submits: RunPrompt[] = []
+  const classifications: string[] = []
+  const next = createPrompt()
+
+  function Composer() {
+    prompt = createPromptState({
+      directory: "/tmp",
+      findFiles: async () => [],
+      agents: () => [],
+      resources: () => [],
+      commands: () => [],
+      tuiConfig,
+      state: footerState(),
+      view: () => "prompt",
+      prompt: () => true,
+      width: () => 100,
+      theme: () => RUN_THEME_FALLBACK.footer,
+      onSubmit: async (value) => {
+        submits.push(value)
+        return true
+      },
+      onCycle: () => {},
+      onInterrupt: () => false,
+      onEditorOpen: async () => undefined,
+      classifyPromptScope: async (text) => {
+        classifications.push(text)
+        return { classification: "broad", confidence: 1, suggestion: "Use a smaller prompt." }
+      },
+      onInputClear: () => {},
+      onExit: () => {},
+      onSkillMenu: () => {},
+      onRows: () => {},
+      onStatus: () => {},
+    })
+    return <box />
+  }
+
+  function Harness() {
+    const renderer = useRenderer()
+    const keymap = createDefaultOpenTuiKeymap(renderer)
+    return (
+      <OpencodeKeymapProvider keymap={keymap}>
+        <Composer />
+      </OpencodeKeymapProvider>
+    )
+  }
+
+  const app = await testRender(() => <Harness />, { width: 100, height: 8, kittyKeyboard: true })
+  try {
+    prompt!.replacePrompt(next)
+    prompt!.onSubmit()
+    await Bun.sleep(0)
+
+    expect(prompt!.scopeNudge()).toBeUndefined()
+    expect(classifications).toEqual([])
+    expect(submits).toEqual([next])
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test.each([
+  ["unavailable", () => Promise.reject(new Error("Prompt scope classification is unavailable"))],
+  ["timeout", () => Promise.reject(new DOMException("The operation timed out", "TimeoutError"))],
+] as const)("mini composer submits normally when prompt scope classification is %s", async (_reason, classifyPromptScope) => {
+  let prompt: PromptState | undefined
+  const submits: RunPrompt[] = []
+
+  function Composer() {
+    prompt = createPromptState({
+      directory: "/tmp",
+      findFiles: async () => [],
+      agents: () => [],
+      resources: () => [],
+      commands: () => [],
+      tuiConfig,
+      state: footerState(),
+      view: () => "prompt",
+      prompt: () => true,
+      width: () => 100,
+      theme: () => RUN_THEME_FALLBACK.footer,
+      onSubmit: async (next) => {
+        submits.push(next)
+        return true
+      },
+      onCycle: () => {},
+      onInterrupt: () => false,
+      onEditorOpen: async () => undefined,
+      classifyPromptScope,
+      onInputClear: () => {},
+      onExit: () => {},
+      onSkillMenu: () => {},
+      onRows: () => {},
+      onStatus: () => {},
+    })
+    return <box />
+  }
+
+  function Harness() {
+    const renderer = useRenderer()
+    const keymap = createDefaultOpenTuiKeymap(renderer)
+    return (
+      <OpencodeKeymapProvider keymap={keymap}>
+        <Composer />
+      </OpencodeKeymapProvider>
+    )
+  }
+
+  const app = await testRender(() => <Harness />, { width: 100, height: 8, kittyKeyboard: true })
+  try {
+    const text = "can you help with my project"
+    prompt!.submitText(text)
+    await Bun.sleep(0)
+
+    expect(prompt!.scopeNudge()).toBeUndefined()
+    expect(submits).toEqual([{ text, parts: [] }])
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+const broadScopePrompt = "do my whole project"
+
+async function renderScopePromptState() {
+  let prompt: PromptState | undefined
+  const submits: RunPrompt[] = []
+
+  function Composer() {
+    prompt = createPromptState({
+      directory: "/tmp",
+      findFiles: async () => [],
+      agents: () => [],
+      resources: () => [],
+      commands: () => [],
+      tuiConfig,
+      state: footerState(),
+      view: () => "prompt",
+      prompt: () => true,
+      width: () => 100,
+      theme: () => RUN_THEME_FALLBACK.footer,
+      onSubmit: async (next) => {
+        submits.push(next)
+        return true
+      },
+      onCycle: () => {},
+      onInterrupt: () => false,
+      onEditorOpen: async () => undefined,
+      classifyPromptScope: async () => ({
+        classification: "not_broad",
+        confidence: 0.9,
+      }),
+      onInputClear: () => {},
+      onExit: () => {},
+      onSkillMenu: () => {},
+      onRows: () => {},
+      onStatus: () => {},
+    })
+    return <box />
+  }
+
+  function Harness() {
+    const renderer = useRenderer()
+    const keymap = createDefaultOpenTuiKeymap(renderer)
+    return (
+      <OpencodeKeymapProvider keymap={keymap}>
+        <Composer />
+      </OpencodeKeymapProvider>
+    )
+  }
+
+  const app = await testRender(() => <Harness />, { width: 100, height: 8, kittyKeyboard: true })
+  prompt!.replaceDraft(broadScopePrompt)
+  prompt!.onSubmit()
+  expect(prompt!.scopeNudge()?.prompt.text).toBe(broadScopePrompt)
+
+  return {
+    prompt: prompt!,
+    submits,
+    cleanup: () => app.renderer.destroy(),
+  }
+}
+
+test("scope nudge dismissal preserves the original prompt", async () => {
+  const state = await renderScopePromptState()
+
+  try {
+    state.prompt.dismissScopeNudge()
+    expect(state.prompt.scopeNudge()).toBeUndefined()
+
+    state.prompt.onSubmit()
+    expect(state.prompt.scopeNudge()?.prompt.text).toBe(broadScopePrompt)
+    expect(state.submits).toEqual([])
+  } finally {
+    state.cleanup()
+  }
+})
+
+test("scope nudge asks anyway with the original prompt", async () => {
+  const state = await renderScopePromptState()
+
+  try {
+    state.prompt.sendScopeNudgeAnyway()
+    await Bun.sleep(0)
+
+    expect(state.prompt.scopeNudge()).toBeUndefined()
+    expect(state.submits).toEqual([{ text: broadScopePrompt, parts: [] }])
+  } finally {
+    state.cleanup()
+  }
+})
+
+test("scope nudge applies the suggestion without submitting it", async () => {
+  const state = await renderScopePromptState()
+  const suggestion = state.prompt.scopeNudge()!.suggestion
+
+  try {
+    state.prompt.useScopeSuggestion()
+
+    expect(state.prompt.scopeNudge()).toBeUndefined()
+    expect(state.submits).toEqual([])
+
+    state.prompt.onSubmit()
+    await Bun.sleep(0)
+    expect(state.submits).toEqual([{ text: suggestion, parts: [] }])
+  } finally {
+    state.cleanup()
+  }
+})
 
 test("direct footer composer area does not adopt footer surface", async () => {
   const surface = RGBA.fromHex("#123456")
