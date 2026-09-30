@@ -1931,6 +1931,7 @@ export type Config = {
   enabled_providers?: Array<string>
   model?: string
   small_model?: string
+  walkthrough?: boolean
   default_agent?: string
   subagent_depth?: number
   username?: string
