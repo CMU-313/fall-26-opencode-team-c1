@@ -9,6 +9,7 @@ import { Auth } from "../../src/auth"
 import { Config } from "../../src/config/config"
 import { RuntimeFlags } from "../../src/effect/runtime-flags"
 import { Global } from "@opencode-ai/core/global"
+import { AgentPlugin } from "@opencode-ai/core/plugin/agent"
 import { Permission } from "../../src/permission"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Plugin } from "../../src/plugin"
@@ -55,6 +56,7 @@ it.instance("returns default native agents when no config", () =>
     expect(names).toContain("compaction")
     expect(names).toContain("title")
     expect(names).toContain("summary")
+    expect(names).toContain("tutor")
   }),
 )
 
@@ -129,6 +131,62 @@ it.instance("explore agent asks for external directories and allows whitelisted 
     expect(
       Permission.evaluate("external_directory", path.join(Global.Path.tmp, "agent-work"), explore!.permission).action,
     ).toBe("allow")
+  }),
+)
+
+it.instance("tutor agent is a native primary agent that denies every write path", () =>
+  Effect.gen(function* () {
+    const tutor = yield* load((svc) => svc.get("tutor"))
+    expect(tutor).toBeDefined()
+    expect(tutor?.mode).toBe("primary")
+    expect(tutor?.native).toBe(true)
+    // `edit` covers edit/write/apply_patch at the tool layer, but assert each so a
+    // future change to that mapping cannot silently reopen a write path.
+    expect(evalPerm(tutor, "edit")).toBe("deny")
+    expect(evalPerm(tutor, "write")).toBe("deny")
+    expect(evalPerm(tutor, "apply_patch")).toBe("deny")
+    // bash is a write path (`sh -c 'cat > file'`); task would let the tutor delegate
+    // the edit to a subagent whose own permissions allow it.
+    expect(evalPerm(tutor, "bash")).toBe("deny")
+    expect(evalPerm(tutor, "task")).toBe("deny")
+  }),
+)
+
+it.instance("tutor agent allows only the read-only tools it teaches with", () =>
+  Effect.gen(function* () {
+    const tutor = yield* load((svc) => svc.get("tutor"))
+    expect(tutor).toBeDefined()
+    expect(evalPerm(tutor, "read")).toBe("allow")
+    expect(evalPerm(tutor, "grep")).toBe("allow")
+    expect(evalPerm(tutor, "glob")).toBe("allow")
+    // `defaults` denies question, so the entry has to re-allow it explicitly.
+    expect(evalPerm(tutor, "question")).toBe("allow")
+    // Denied tools are hidden from the model, not offered and refused.
+    expect(Permission.disabled(["edit", "write", "apply_patch", "bash", "task"], tutor!.permission)).toEqual(
+      new Set(["edit", "write", "apply_patch", "bash", "task"]),
+    )
+    expect(Permission.disabled(["read", "grep", "glob", "question"], tutor!.permission)).toEqual(new Set())
+  }),
+)
+
+it.instance("tutor agent keeps the .env read guard its wildcard deny would otherwise erase", () =>
+  Effect.gen(function* () {
+    const tutor = yield* load((svc) => svc.get("tutor"))
+    expect(tutor).toBeDefined()
+    // This fails if the nested `read` block is ever "simplified" to a flat read: "allow",
+    // which is the hole `explore` has today.
+    expect(Permission.evaluate("read", "foo.env", tutor!.permission).action).toBe("ask")
+    expect(Permission.evaluate("read", "foo.env.local", tutor!.permission).action).toBe("ask")
+    expect(Permission.evaluate("read", "foo.env.example", tutor!.permission).action).toBe("allow")
+    expect(Permission.evaluate("read", "src/index.ts", tutor!.permission).action).toBe("allow")
+  }),
+)
+
+it.instance("tutor prompt matches the v2 registry copy", () =>
+  Effect.gen(function* () {
+    const tutor = yield* load((svc) => svc.get("tutor"))
+    // The v2 registry inlines the prompt as a string const; edit tutor.txt and PROMPT_TUTOR together.
+    expect(tutor?.prompt).toBe(AgentPlugin.PROMPT_TUTOR)
   }),
 )
 
@@ -815,6 +873,7 @@ it.instance(
         build: { disable: true },
         plan: { disable: true },
         "debug-coach": { disable: true },
+        tutor: { disable: true },
       },
     },
   },

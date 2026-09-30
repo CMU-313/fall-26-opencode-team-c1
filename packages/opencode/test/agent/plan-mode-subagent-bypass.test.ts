@@ -70,6 +70,30 @@ it.instance("subagent's own read-only restriction remains effective", () =>
   }),
 )
 
+it.instance("tutor cannot delegate its way around its own read-only permissions", () =>
+  Effect.gen(function* () {
+    const tutor = yield* Agent.use.get("tutor")
+    const general = yield* Agent.use.get("general")
+    expect(tutor).toBeDefined()
+    expect(general).toBeDefined()
+
+    // The bypass this file documents: a subagent's own permissions win over the
+    // parent's, so if the tutor could start a task, `general` would happily edit
+    // files on its behalf and the read-only intent would be worth nothing.
+    const parentSessionPermission: PermissionV1.Ruleset = []
+    const delegated = Permission.merge(
+      general!.permission,
+      deriveSubagentSessionPermission({ parentSessionPermission, subagent: general! }),
+    )
+    expect(Permission.evaluate("edit", "/x.ts", delegated).action).not.toBe("deny")
+
+    // Which is why `task` is denied outright -- by wildcard and for `general` by
+    // name -- so the tutor never reaches a subagent in the first place.
+    expect(Permission.evaluate("task", "*", tutor!.permission).action).toBe("deny")
+    expect(Permission.evaluate("task", "general", tutor!.permission).action).toBe("deny")
+  }),
+)
+
 it.instance(
   "custom subagent can explicitly enable edits denied to its parent agent",
   () =>
