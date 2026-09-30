@@ -27,6 +27,7 @@ import type {
   RunAgent,
   RunInput,
   RunPrompt,
+  RunPromptScopeClassification,
   RunResource,
   RunTuiConfig,
 } from "./types"
@@ -69,6 +70,7 @@ export type LifecycleInput = {
   onPermissionReply: (input: PermissionReply) => void | Promise<void>
   onQuestionReply: (input: QuestionReply) => void | Promise<void>
   onQuestionReject: (input: QuestionReject) => void | Promise<void>
+  classifyPromptScope: (text: string) => Promise<RunPromptScopeClassification | undefined>
   onCycleVariant?: () => CycleResult | void
   onModelSelect?: (model: NonNullable<RunInput["model"]>) => CycleResult | void | Promise<CycleResult | void>
   onVariantSelect?: (variant: string | undefined) => CycleResult | void | Promise<CycleResult | void>
@@ -275,6 +277,7 @@ export async function createRuntimeLifecycle(input: LifecycleInput): Promise<Lif
           attachSigint()
         }
       },
+      classifyPromptScope: input.classifyPromptScope,
       onSubagentSelect: input.onSubagentSelect,
     })
 
