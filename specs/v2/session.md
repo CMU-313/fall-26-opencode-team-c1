@@ -2,6 +2,33 @@
 
 ## Current V2 Core Slice
 
+### Optional codebase walkthrough
+
+Set `"walkthrough": true` in `opencode.json` or `opencode.jsonc` to enable the
+V2 build agent's pre-edit walkthrough. The default is off.
+
+Before the first `edit`, `write`, or `apply_patch` executes for a user request,
+the terminal question prompt lists every file successfully inspected with `read`,
+with one model-written line explaining its role and relevance to the change.
+Repeated reads of the same path appear once; failed reads and directory listings
+are excluded. A request with no reads says so, and a request with no edits never
+opens this prompt.
+
+- **Continue** allows the edit and subsequent edits in that request.
+- **Cancel** (or dismissing the question) ends execution without running the pending edits.
+- **Type your own answer** asks a follow-up. The model supplies an answer, which
+  appears with the walkthrough again; edits remain blocked until Continue.
+
+The runner validates the model's `walkthrough` entries against successful read
+results and strips the extra fields before calling the normal editing tool.
+Opted-in tool calls run in order so reads and concurrent edits cannot race past
+the approval. New user input resets the file list and approval; provider
+continuations retain them. Other agents and disabled mode retain their existing
+behavior. This gate covers the three editing tools above, not arbitrary shell
+or plugin side effects; the build prompt instructs the agent not to bypass it.
+
+### Prompt admission and execution
+
 The Effect-native core facade treats prompt recording and execution as separate responsibilities:
 
 ```text
