@@ -9,6 +9,7 @@ import { Auth } from "../../src/auth"
 import { Config } from "../../src/config/config"
 import { RuntimeFlags } from "../../src/effect/runtime-flags"
 import { Global } from "@opencode-ai/core/global"
+import { AgentPlugin } from "@opencode-ai/core/plugin/agent"
 import { Permission } from "../../src/permission"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Plugin } from "../../src/plugin"
@@ -178,6 +179,14 @@ it.instance("tutor agent keeps the .env read guard its wildcard deny would other
     expect(Permission.evaluate("read", "foo.env.local", tutor!.permission).action).toBe("ask")
     expect(Permission.evaluate("read", "foo.env.example", tutor!.permission).action).toBe("allow")
     expect(Permission.evaluate("read", "src/index.ts", tutor!.permission).action).toBe("allow")
+  }),
+)
+
+it.instance("tutor prompt matches the v2 registry copy", () =>
+  Effect.gen(function* () {
+    const tutor = yield* load((svc) => svc.get("tutor"))
+    // The v2 registry inlines the prompt as a string const; edit tutor.txt and PROMPT_TUTOR together.
+    expect(tutor?.prompt).toBe(AgentPlugin.PROMPT_TUTOR)
   }),
 )
 
