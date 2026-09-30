@@ -37,3 +37,60 @@ Run the automated tests from their package directories:
 cd packages/tui && bun test src/prompt/scope.test.ts
 cd ../opencode && bun test src/prompt-scope/classifier.test.ts src/prompt-scope/service.test.ts test/cli/run/footer.view.test.tsx test/server/httpapi-prompt-scope.test.ts
 ```
+
+## Codebase Walkthrough Before First Edit
+
+When enabled, the build agent pauses before its first edit in each request, lists every file it read with one line on what the file does and why it matters to the change, and waits for you to continue, cancel, or ask a question. It is off by default.
+
+### How to Use and Manually Test
+
+1. Create a small project and turn the walkthrough on in its `opencode.json` (the flag also works in the global `~/.config/opencode/opencode.json`):
+
+   ```bash
+   mkdir -p /tmp/walkthrough-demo && cd /tmp/walkthrough-demo && git init -q
+   printf 'export const add = (a, b) => a - b\n' > math.js
+   printf 'import { add } from "./math.js"\nconsole.log(add(2, 3))\n' > main.js
+   printf '{ "walkthrough": true }\n' > opencode.json
+   git add -A && git commit -qm init
+   ```
+
+2. From the repository root, open it in the terminal UI: `bun dev /tmp/walkthrough-demo`
+3. With the **build** agent, ask `read main.js and math.js, then fix the bug in add`. Before any edit, a **Codebase walkthrough** prompt lists `main.js` and `math.js` with a one-line explanation each.
+4. Try each choice:
+   - **Continue**: the edit runs, and later edits in the same request do not prompt again.
+   - **Cancel** (or dismiss the prompt): the request ends and `git status --short` prints nothing.
+   - Type a question such as `why main.js?`: the answer appears in the walkthrough, which is asked again. Nothing is edited until you choose **Continue**.
+5. Ask `explain what main.js does`. No walkthrough appears because nothing is edited.
+6. Set `"walkthrough": false` (or remove it) and repeat step 3. The agent edits immediately, as before.
+
+### Automated Tests
+
+- [`packages/core/test/session-walkthrough.test.ts`](packages/core/test/session-walkthrough.test.ts): the gate on its own. Three reads then an edit lists all three files and waits once; reads-only requests emit nothing; Cancel and dismissal block queued edits; follow-ups are answered and asked again before editing; omitted, duplicate, invented, or blank explanations are rejected; repeated, failed, and directory reads are handled; approval resets for each new request.
+- [`packages/core/test/session-runner.test.ts`](packages/core/test/session-runner.test.ts) (`walkthrough integration: *`): the gate inside the full session runner for Continue, Cancel (asserts a clean `git status`), follow-up, batched edits, reads-only, flag off, and a non-build agent.
+- [`packages/core/test/config/config.test.ts`](packages/core/test/config/config.test.ts): the flag is off by default, can be enabled, and survives migration from the older config format.
+- [`packages/opencode/test/session/prompt.test.ts`](packages/opencode/test/session/prompt.test.ts) (`walkthrough *`): the gate in the session loop used by the terminal UI. It names every read file before the first edit, Cancel leaves files unchanged, and reads-only requests show nothing.
+- [`packages/tui/test/cli/tui/walkthrough-question.test.tsx`](packages/tui/test/cli/tui/walkthrough-question.test.tsx): the terminal prompt renders the file list and submits Continue, Cancel, and a typed follow-up.
+
+### Why This Is Sufficient
+
+Every acceptance criterion from issue #7 has at least one test:
+
+| Acceptance criterion                                                                | Covered by                                                                                                        |
+| ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| The first edit is preceded by a walkthrough of every file read, and the agent waits | session-walkthrough three-reads test, runner `continue`, prompt "names every read file"                           |
+| Continue runs the edit; Cancel ends the turn with a clean `git status`              | runner `continue` and `cancel`, session-walkthrough Cancel/dismissal tests, prompt "cancel ends the request"      |
+| A follow-up is answered and the prompt is shown again, with no edits                | session-walkthrough follow-up test, runner `followup`, TUI follow-up test                                         |
+| No-edit turns show nothing; the flag off changes nothing                            | session-walkthrough and runner reads-only, runner `disabled` and `other-agent`, prompt reads-only, config default |
+| At most one walkthrough per turn                                                    | session-walkthrough three-reads test (one prompt, three edits) and new-request test, runner `batched`             |
+| Unit test: three reads then an edit names all three files                           | session-walkthrough "lists three reads before editing and waits for Continue only once"                           |
+| Unit test: reads only emits no walkthrough                                          | session-walkthrough "does not emit a walkthrough for a reads-only turn"                                           |
+
+The logic is tested on its own, inside both session loops that run it (the core runner and the opencode loop the terminal UI uses), and at the rendered terminal prompt, so a break at any layer between the model's tool call and what the student sees fails a test. Model replies are scripted fixtures, so the tests are deterministic and need no live model.
+
+Run the automated tests from their package directories:
+
+```bash
+cd packages/core && bun test test/session-walkthrough.test.ts test/session-runner.test.ts test/config/config.test.ts
+cd ../opencode && bun test test/session/prompt.test.ts
+cd ../tui && bun test test/cli/tui/walkthrough-question.test.tsx
+```
