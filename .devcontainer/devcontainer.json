@@ -1,0 +1,27 @@
+{
+  "name": "opencode",
+  "build": { "dockerfile": "Dockerfile", "args": { "BUN_VERSION": "1.3.14" } },
+  "remoteUser": "node",
+  "workspaceFolder": "/workspaces/fall-26-opencode-team-c1",
+  "mounts": [
+    // node_modules must NOT be shared with the macOS host: @opentui/core and
+    // @ff-labs/fff-bin resolve to per-platform prebuilds, so a darwin-arm64
+    // tree is wrong inside linux. A named volume also avoids Docker Desktop's
+    // slow bind-mount I/O on the largest directory in the repo.
+    "source=opencode-node-modules,target=/workspaces/fall-26-opencode-team-c1/node_modules,type=volume",
+    // Persist provider auth and config across rebuilds so the TUI does not need
+    // a fresh `auth login` every time. XDG paths per packages/core/src/global.ts.
+    "source=opencode-data,target=/home/node/.local/share/opencode,type=volume",
+    "source=opencode-config,target=/home/node/.config/opencode,type=volume"
+  ],
+  // The Dockerfile pre-creates the XDG tree as `node` so Docker does not root-own
+  // it when mounting the volumes. This chown is the belt-and-braces for volumes
+  // created before that fix, and for the node_modules volume, which is always new.
+  "postCreateCommand": "sudo chown -R node:node node_modules ~/.local ~/.config ~/.cache && bun install",
+  "forwardPorts": [5173],
+  "customizations": {
+    "vscode": {
+      "extensions": ["oxc.oxc-vscode"]
+    }
+  }
+}
