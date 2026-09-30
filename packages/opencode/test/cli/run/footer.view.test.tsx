@@ -352,6 +352,66 @@ test("mini composer classifies ambiguous prompts before submitting", async () =>
   }
 })
 
+test.each([
+  ["unavailable", () => Promise.reject(new Error("Prompt scope classification is unavailable"))],
+  ["timeout", () => Promise.reject(new DOMException("The operation timed out", "TimeoutError"))],
+] as const)("mini composer submits normally when prompt scope classification is %s", async (_reason, classifyPromptScope) => {
+  let prompt: PromptState | undefined
+  const submits: RunPrompt[] = []
+
+  function Composer() {
+    prompt = createPromptState({
+      directory: "/tmp",
+      findFiles: async () => [],
+      agents: () => [],
+      resources: () => [],
+      commands: () => [],
+      tuiConfig,
+      state: footerState(),
+      view: () => "prompt",
+      prompt: () => true,
+      width: () => 100,
+      theme: () => RUN_THEME_FALLBACK.footer,
+      onSubmit: async (next) => {
+        submits.push(next)
+        return true
+      },
+      onCycle: () => {},
+      onInterrupt: () => false,
+      onEditorOpen: async () => undefined,
+      classifyPromptScope,
+      onInputClear: () => {},
+      onExit: () => {},
+      onSkillMenu: () => {},
+      onRows: () => {},
+      onStatus: () => {},
+    })
+    return <box />
+  }
+
+  function Harness() {
+    const renderer = useRenderer()
+    const keymap = createDefaultOpenTuiKeymap(renderer)
+    return (
+      <OpencodeKeymapProvider keymap={keymap}>
+        <Composer />
+      </OpencodeKeymapProvider>
+    )
+  }
+
+  const app = await testRender(() => <Harness />, { width: 100, height: 8, kittyKeyboard: true })
+  try {
+    const text = "can you help with my project"
+    prompt!.submitText(text)
+    await Bun.sleep(0)
+
+    expect(prompt!.scopeNudge()).toBeUndefined()
+    expect(submits).toEqual([{ text, parts: [] }])
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
 const broadScopePrompt = "do my whole project"
 
 async function renderScopePromptState() {
