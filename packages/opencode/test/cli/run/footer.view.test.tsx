@@ -343,10 +343,102 @@ test("mini composer classifies ambiguous prompts before submitting", async () =>
     prompt!.submitText("can you do basically this whole project for me")
     await Bun.sleep(0)
 
+    expect(prompt!.scopeNudge()).toBeUndefined()
     expect(events).toEqual([
       "classify:can you do basically this whole project for me",
       "submit:can you do basically this whole project for me",
     ])
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("mini composer renders a scope nudge and suggestion before submitting a broad prompt", async () => {
+  const submits: RunPrompt[] = []
+  const app = await renderFooter({
+    height: 20,
+    onSubmit: (prompt) => {
+      submits.push(prompt)
+      return true
+    },
+  })
+
+  try {
+    "do my whole project".split("").forEach((key) => app.mockInput.pressKey(key))
+    app.mockInput.pressEnter()
+    await app.renderOnce()
+
+    const frame = app.captureCharFrame()
+    expect(frame).toContain("This request may be too broad")
+    expect(frame).toContain("Help me break this project into the first small step")
+    expect(frame).toContain("Use suggestion")
+    expect(frame).toContain("Ask anyway")
+    expect(submits).toEqual([])
+  } finally {
+    app.cleanup()
+  }
+})
+
+test.each([
+  ["shell", { text: "build the full app", parts: [], mode: "shell" }],
+  ["slash command", { text: "/build the full app", parts: [] }],
+] as const)("mini composer submits a broad-looking %s without a scope nudge", async (_kind, next) => {
+  let prompt: PromptState | undefined
+  const submits: RunPrompt[] = []
+  const classifications: string[] = []
+
+  function Composer() {
+    prompt = createPromptState({
+      directory: "/tmp",
+      findFiles: async () => [],
+      agents: () => [],
+      resources: () => [],
+      commands: () => [],
+      tuiConfig,
+      state: footerState(),
+      view: () => "prompt",
+      prompt: () => true,
+      width: () => 100,
+      theme: () => RUN_THEME_FALLBACK.footer,
+      onSubmit: async (value) => {
+        submits.push(value)
+        return true
+      },
+      onCycle: () => {},
+      onInterrupt: () => false,
+      onEditorOpen: async () => undefined,
+      classifyPromptScope: async (text) => {
+        classifications.push(text)
+        return { classification: "broad", confidence: 1, suggestion: "Use a smaller prompt." }
+      },
+      onInputClear: () => {},
+      onExit: () => {},
+      onSkillMenu: () => {},
+      onRows: () => {},
+      onStatus: () => {},
+    })
+    return <box />
+  }
+
+  function Harness() {
+    const renderer = useRenderer()
+    const keymap = createDefaultOpenTuiKeymap(renderer)
+    return (
+      <OpencodeKeymapProvider keymap={keymap}>
+        <Composer />
+      </OpencodeKeymapProvider>
+    )
+  }
+
+  const app = await testRender(() => <Harness />, { width: 100, height: 8, kittyKeyboard: true })
+  try {
+    prompt!.replacePrompt(next)
+    prompt!.onSubmit()
+    await Bun.sleep(0)
+
+    expect(prompt!.scopeNudge()).toBeUndefined()
+    expect(classifications).toEqual([])
+    expect(submits).toEqual([next])
   } finally {
     app.renderer.destroy()
   }
