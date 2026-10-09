@@ -207,6 +207,17 @@ Six tests cover this feature:
   test confirms that protection was correctly restated.
 - **Prompt contract** — the attached prompt still contains all five behavioral
   sections, guarding against someone removing one or wiring the wrong file.
+### Acceptance criteria coverage
+
+| Acceptance criterion | Covered by |
+| --- | --- |
+| A new `debug-coach` mode appears in the agent switcher | Registration test |
+| Edit and write tools are denied so it cannot patch the bug | Denied tools test, subagent denial test |
+| Asks for a predicted root cause before diagnosing | Prompt contract test, manual step 1 |
+| Evaluates an incorrect prediction without revealing the cause | Prompt contract test, manual step 2 |
+| Confirms a partially correct prediction and asks to refine | Prompt contract test, manual step 3 |
+| Student can bypass with "just tell me" | Prompt contract test, manual step 5 |
+| Withholds the diagnosis for a minimum number of rounds | Not verified. Manual runs reached the bypass path first. |
 
 ### Why sufficient
 
