@@ -187,7 +187,7 @@ Run through these in order. Expected behavior is listed for each.
 
 ### Automated tests
 
-Location: `packages/opencode/test/agent/agent.test.ts`
+Location: [`packages/opencode/test/agent/agent.test.ts`](packages/opencode/test/agent/agent.test.ts)
 
 Run with `cd packages/opencode && bun run test test/agent`
 
