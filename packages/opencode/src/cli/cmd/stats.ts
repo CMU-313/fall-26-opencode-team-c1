@@ -7,7 +7,9 @@ import { SessionTable } from "@opencode-ai/core/session/sql"
 import { Project } from "@/project/project"
 import { InstanceRef } from "@/effect/instance-ref"
 
-interface SessionStats {
+const MS_IN_DAY = 24 * 60 * 60 * 1000
+
+export interface SessionStats {
   totalSessions: number
   totalMessages: number
   totalCost: number
@@ -41,9 +43,22 @@ interface SessionStats {
     latest: number
   }
   days: number
+  activeDays: number
   costPerDay: number
   tokensPerSession: number
   medianTokensPerSession: number
+}
+
+export interface SessionStatsInput {
+  messageCount: number
+  sessionCost: number
+  sessionTokens: SessionStats["totalTokens"]
+  sessionTotalTokens: number
+  sessionToolUsage: Record<string, number>
+  sessionModelUsage: SessionStats["modelUsage"]
+  activityTimes: number[]
+  earliestTime: number
+  latestTime: number
 }
 
 export const StatsCommand = effectCmd({
@@ -92,7 +107,6 @@ const aggregateSessionStats = Effect.fn("Cli.stats.aggregate")(function* (
 ) {
   const svc = yield* Session.Service
   const sessions = yield* getAllSessions()
-  const MS_IN_DAY = 24 * 60 * 60 * 1000
 
   const cutoffTime = (() => {
     if (days === undefined) return 0
@@ -121,44 +135,13 @@ const aggregateSessionStats = Effect.fn("Cli.stats.aggregate")(function* (
     }
   }
 
-  const stats: SessionStats = {
-    totalSessions: filteredSessions.length,
-    totalMessages: 0,
-    totalCost: 0,
-    totalTokens: {
-      input: 0,
-      output: 0,
-      reasoning: 0,
-      cache: {
-        read: 0,
-        write: 0,
-      },
-    },
-    toolUsage: {},
-    modelUsage: {},
-    dateRange: {
-      earliest: Date.now(),
-      latest: Date.now(),
-    },
-    days: 0,
-    costPerDay: 0,
-    tokensPerSession: 0,
-    medianTokensPerSession: 0,
-  }
-
   if (filteredSessions.length > 1000) {
     console.log(`Large dataset detected (${filteredSessions.length} sessions). This may take a while...`)
   }
 
   if (filteredSessions.length === 0) {
-    stats.days = windowDays ?? 0
-    return stats
+    return aggregateSessionStatsInputs([], windowDays)
   }
-
-  let earliestTime = Date.now()
-  let latestTime = 0
-
-  const sessionTotalTokens: number[] = []
 
   const results = yield* Effect.forEach(
     filteredSessions,
@@ -221,6 +204,9 @@ const aggregateSessionStats = Effect.fn("Cli.stats.aggregate")(function* (
             sessionTokens.cache.write,
           sessionToolUsage,
           sessionModelUsage,
+          activityTimes: messages
+            .map((message) => message.info.time.created)
+            .filter((time) => cutoffTime === 0 || time >= cutoffTime),
           earliestTime: cutoffTime > 0 ? session.time.updated : session.time.created,
           latestTime: session.time.updated,
         }
@@ -228,10 +214,50 @@ const aggregateSessionStats = Effect.fn("Cli.stats.aggregate")(function* (
     { concurrency: 20 },
   )
 
+  return aggregateSessionStatsInputs(results, windowDays)
+})
+
+export function aggregateSessionStatsInputs(results: SessionStatsInput[], windowDays?: number): SessionStats {
+  const stats: SessionStats = {
+    totalSessions: results.length,
+    totalMessages: 0,
+    totalCost: 0,
+    totalTokens: {
+      input: 0,
+      output: 0,
+      reasoning: 0,
+      cache: {
+        read: 0,
+        write: 0,
+      },
+    },
+    toolUsage: {},
+    modelUsage: {},
+    dateRange: {
+      earliest: Date.now(),
+      latest: Date.now(),
+    },
+    days: windowDays ?? 0,
+    activeDays: 0,
+    costPerDay: 0,
+    tokensPerSession: 0,
+    medianTokensPerSession: 0,
+  }
+  if (results.length === 0) return stats
+
+  let earliestTime = Date.now()
+  let latestTime = 0
+  const sessionTotalTokens: number[] = []
+  const activeDates = new Set<string>()
+
   for (const result of results) {
     earliestTime = Math.min(earliestTime, result.earliestTime)
     latestTime = Math.max(latestTime, result.latestTime)
     sessionTotalTokens.push(result.sessionTotalTokens)
+    for (const time of result.activityTimes) {
+      const date = new Date(time)
+      activeDates.add(`${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`)
+    }
 
     stats.totalMessages += result.messageCount
     stats.totalCost += result.sessionCost
@@ -269,6 +295,7 @@ const aggregateSessionStats = Effect.fn("Cli.stats.aggregate")(function* (
     latest: latestTime,
   }
   stats.days = effectiveDays
+  stats.activeDays = activeDates.size
   stats.costPerDay = stats.totalCost / effectiveDays
   const totalTokens =
     stats.totalTokens.input +
@@ -276,7 +303,7 @@ const aggregateSessionStats = Effect.fn("Cli.stats.aggregate")(function* (
     stats.totalTokens.reasoning +
     stats.totalTokens.cache.read +
     stats.totalTokens.cache.write
-  stats.tokensPerSession = filteredSessions.length > 0 ? totalTokens / filteredSessions.length : 0
+  stats.tokensPerSession = results.length > 0 ? totalTokens / results.length : 0
   sessionTotalTokens.sort((a, b) => a - b)
   const mid = Math.floor(sessionTotalTokens.length / 2)
   stats.medianTokensPerSession =
@@ -287,7 +314,16 @@ const aggregateSessionStats = Effect.fn("Cli.stats.aggregate")(function* (
         : sessionTotalTokens[mid]
 
   return stats
-})
+}
+
+export function rankModels(modelUsage: SessionStats["modelUsage"], modelLimit: number) {
+  const sortedModels = Object.entries(modelUsage).sort(([modelA, usageA], [modelB, usageB]) => {
+    const messages = usageB.messages - usageA.messages
+    if (messages !== 0) return messages
+    return modelA.localeCompare(modelB)
+  })
+  return modelLimit === Infinity ? sortedModels : sortedModels.slice(0, modelLimit)
+}
 
 export function displayStats(stats: SessionStats, toolLimit?: number, modelLimit?: number) {
   const width = 56
@@ -305,7 +341,8 @@ export function displayStats(stats: SessionStats, toolLimit?: number, modelLimit
   console.log("├────────────────────────────────────────────────────────┤")
   console.log(renderRow("Sessions", stats.totalSessions.toLocaleString()))
   console.log(renderRow("Messages", stats.totalMessages.toLocaleString()))
-  console.log(renderRow("Days", stats.days.toString()))
+  console.log(renderRow("Active Days", stats.activeDays.toString()))
+  console.log(renderRow("Elapsed Days", stats.days.toString()))
   console.log("└────────────────────────────────────────────────────────┘")
   console.log()
 
@@ -330,8 +367,7 @@ export function displayStats(stats: SessionStats, toolLimit?: number, modelLimit
 
   // Model Usage section
   if (modelLimit !== undefined && Object.keys(stats.modelUsage).length > 0) {
-    const sortedModels = Object.entries(stats.modelUsage).sort(([, a], [, b]) => b.messages - a.messages)
-    const modelsToDisplay = modelLimit === Infinity ? sortedModels : sortedModels.slice(0, modelLimit)
+    const modelsToDisplay = rankModels(stats.modelUsage, modelLimit)
 
     console.log("┌────────────────────────────────────────────────────────┐")
     console.log("│                      MODEL USAGE                       │")
