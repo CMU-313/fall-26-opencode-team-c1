@@ -1,15 +1,10 @@
 // Property tests for the /undo requirements in traceability/yuxizhen.md.
-//
-// Each run uses a real temporary git repo, the real Snapshot service, and the
-// real SessionRevert service, because the behavior under test is what git and
-// the filesystem end up containing. Each run costs several git processes, so
-// numRuns stays well below fast-check's default of 100.
+
 import { describe, expect } from "bun:test"
 import fc from "fast-check"
 import fs from "fs/promises"
 import path from "path"
 import { Effect, Layer, Scope } from "effect"
-import { ChildProcessSpawner } from "effect/unstable/process"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -23,11 +18,11 @@ import { MCP } from "../../src/mcp"
 import { SessionPrompt } from "../../src/session/prompt"
 import { SessionRevert } from "../../src/session/revert"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
-import { SessionSummary } from "../../src/session/summary"
 import { Snapshot } from "../../src/snapshot"
 import { provideTmpdirInstance, provideTmpdirServer } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { TestLLMServer } from "../lib/llm-server"
+import { testProviderConfig } from "../lib/test-provider"
 import { createdTurn, editedTurn, prunedTurn, separatedEdits, undoneTurn } from "./undo.generator"
 
 // Snapshots skip new untracked files larger than this (src/snapshot/index.ts).
@@ -37,14 +32,6 @@ const PRUNED_SNAPSHOT = "0".repeat(40)
 const ref = { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test-model") }
 const tokens = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
 
-const assertOptions = (numRuns: number) => ({
-  numRuns,
-  // Shrinking a failure can take thousands of git processes. Stop in time for
-  // fast-check to report the smallest counterexample found so far, and count
-  // running out of time as a failure so a slow run can't pass by doing less.
-  interruptAfterTimeLimit: 150_000,
-  markInterruptAsFailure: true,
-})
 const TEST_TIMEOUT = 180_000
 
 const revertIt = testEffect(
@@ -53,18 +40,28 @@ const revertIt = testEffect(
   ),
 )
 
-type RevertServices =
-  | Session.Service
-  | SessionRevert.Service
-  | Snapshot.Service
-  | ChildProcessSpawner.ChildProcessSpawner
-
-// Runs one generated case against the services already built for the test, so
-// each case gets a fresh repo without rebuilding every layer.
-const caseRunner = <R>() =>
+// Checks a property against the services already built for the test, so each
+// generated case gets a fresh repo without rebuilding every layer.
+const undoProperty = <T, E, R>(
+  arbitrary: fc.Arbitrary<T>,
+  numRuns: number,
+  testCase: (input: T) => Effect.Effect<void, E, R>,
+) =>
   Effect.gen(function* () {
-    const context = yield* Effect.context<R>()
-    return <A, E>(effect: Effect.Effect<A, E, R | Scope.Scope>) => Effect.runPromiseWith(context)(Effect.scoped(effect))
+    const context = yield* Effect.context<Exclude<R, Scope.Scope>>()
+    yield* Effect.promise(() =>
+      fc.assert(
+        fc.asyncProperty(arbitrary, (input) => Effect.runPromiseWith(context)(Effect.scoped(testCase(input)))),
+        {
+          numRuns,
+          // Shrinking a failure can take thousands of git processes. Stop in time for
+          // fast-check to report the smallest counterexample found so far, and count
+          // running out of time as a failure so a slow run can't pass by doing less.
+          interruptAfterTimeLimit: 150_000,
+          markInterruptAsFailure: true,
+        },
+      ),
+    )
   })
 
 const git = (cwd: string, ...args: string[]) =>
@@ -259,79 +256,69 @@ snapshotTests("/undo properties", () => {
   // `git status` may still show.
   revertIt.live(
     "R1: every snapshot-covered file the agent created is gone after /undo unless the user edited it",
-    Effect.gen(function* () {
-      const run = yield* caseRunner<RevertServices>()
-      yield* Effect.promise(() =>
-        fc.assert(
-          fc.asyncProperty(createdTurn, (input) =>
-            run(
-              provideTmpdirInstance(
-                Effect.fnUntraced(function* (dir) {
-                  const sessions = yield* Session.Service
-                  const revert = yield* SessionRevert.Service
-                  const at = (file: string) => path.join(dir, file)
+    undoProperty(createdTurn, 25, (input) =>
+      provideTmpdirInstance(
+        Effect.fnUntraced(function* (dir) {
+          const sessions = yield* Session.Service
+          const revert = yield* SessionRevert.Service
+          const at = (file: string) => path.join(dir, file)
 
-                  yield* put(at(".gitignore"), "build/\n")
-                  yield* put(at("kept-tracked.txt"), "tracked before the turn\n")
-                  yield* commitAll(dir)
-                  // Exists before the turn but isn't committed, so a careless
-                  // "delete everything untracked" would remove it.
-                  yield* put(at("kept-untracked.local"), "the user's own file\n")
-                  const clean = yield* gitStatus(dir)
+          yield* put(at(".gitignore"), "build/\n")
+          yield* put(at("kept-tracked.txt"), "tracked before the turn\n")
+          yield* commitAll(dir)
+          // Exists before the turn but isn't committed, so a careless
+          // "delete everything untracked" would remove it.
+          yield* put(at("kept-untracked.local"), "the user's own file\n")
+          const clean = yield* gitStatus(dir)
 
-                  const session = yield* sessions.create({})
-                  const firstStep = Effect.forEach(
-                    input.created.filter((file) => file.step === 0),
-                    (file) => put(at(file.path), file.content),
-                  )
-                  const secondStep = Effect.forEach(input.created, (file) => {
-                    if (file.step === 1) return put(at(file.path), file.content)
-                    if (file.rewritten) return put(at(file.path), "rewritten in a later step\n")
-                    return Effect.void
-                  })
-                  const boundaryFiles = Effect.all([
-                    input.atLimit ? put(at("exact-limit.bin"), new Uint8Array(SNAPSHOT_LIMIT)) : Effect.void,
-                    input.overLimit ? put(at("over-limit.bin"), new Uint8Array(SNAPSHOT_LIMIT + 1)) : Effect.void,
-                    input.ignored ? put(at("build/out.log"), "generated\n") : Effect.void,
-                  ])
-                  const messageID = yield* agentTurn(session.id, dir, [
-                    firstStep.pipe(Effect.asVoid),
-                    secondStep.pipe(Effect.andThen(boundaryFiles), Effect.asVoid),
-                  ])
+          const session = yield* sessions.create({})
+          const firstStep = Effect.forEach(
+            input.created.filter((file) => file.step === 0),
+            (file) => put(at(file.path), file.content),
+          )
+          const secondStep = Effect.forEach(input.created, (file) => {
+            if (file.step === 1) return put(at(file.path), file.content)
+            if (file.rewritten) return put(at(file.path), "rewritten in a later step\n")
+            return Effect.void
+          })
+          const boundaryFiles = Effect.all([
+            input.atLimit ? put(at("exact-limit.bin"), new Uint8Array(SNAPSHOT_LIMIT)) : Effect.void,
+            input.overLimit ? put(at("over-limit.bin"), new Uint8Array(SNAPSHOT_LIMIT + 1)) : Effect.void,
+            input.ignored ? put(at("build/out.log"), "generated\n") : Effect.void,
+          ])
+          const messageID = yield* agentTurn(session.id, dir, [
+            firstStep.pipe(Effect.asVoid),
+            secondStep.pipe(Effect.andThen(boundaryFiles), Effect.asVoid),
+          ])
 
-                  yield* Effect.forEach(
-                    input.created.filter((file) => file.userEdited),
-                    (file) => put(at(file.path), USER_EDIT),
-                  )
+          yield* Effect.forEach(
+            input.created.filter((file) => file.userEdited),
+            (file) => put(at(file.path), USER_EDIT),
+          )
 
-                  yield* revert.revert({ sessionID: session.id, messageID })
+          yield* revert.revert({ sessionID: session.id, messageID })
 
-                  for (const file of input.created) {
-                    if (file.userEdited) expect(yield* readBytes(at(file.path))).toEqual(USER_EDIT)
-                    if (!file.userEdited) expect(yield* exists(at(file.path))).toBe(false)
-                  }
-                  if (input.atLimit) expect(yield* exists(at("exact-limit.bin"))).toBe(false)
-                  // Snapshots never recorded these, so they must stay on disk.
-                  if (input.overLimit) expect(yield* exists(at("over-limit.bin"))).toBe(true)
-                  if (input.ignored) expect(yield* exists(at("build/out.log"))).toBe(true)
-                  expect(yield* exists(at("kept-tracked.txt"))).toBe(true)
-                  expect(yield* exists(at("kept-untracked.local"))).toBe(true)
-                  expect(yield* gitStatus(dir)).toEqual(
-                    [
-                      ...clean,
-                      ...input.created.filter((file) => file.userEdited).map((file) => `?? ${file.path}`),
-                      ...(input.overLimit ? ["?? over-limit.bin"] : []),
-                    ].toSorted(),
-                  )
-                }),
-                { git: true },
-              ),
-            ),
-          ),
-          assertOptions(25),
-        ),
-      )
-    }),
+          for (const file of input.created) {
+            if (file.userEdited) expect(yield* readBytes(at(file.path))).toEqual(USER_EDIT)
+            if (!file.userEdited) expect(yield* exists(at(file.path))).toBe(false)
+          }
+          if (input.atLimit) expect(yield* exists(at("exact-limit.bin"))).toBe(false)
+          // Snapshots never recorded these, so they must stay on disk.
+          if (input.overLimit) expect(yield* exists(at("over-limit.bin"))).toBe(true)
+          if (input.ignored) expect(yield* exists(at("build/out.log"))).toBe(true)
+          expect(yield* exists(at("kept-tracked.txt"))).toBe(true)
+          expect(yield* exists(at("kept-untracked.local"))).toBe(true)
+          expect(yield* gitStatus(dir)).toEqual(
+            [
+              ...clean,
+              ...input.created.filter((file) => file.userEdited).map((file) => `?? ${file.path}`),
+              ...(input.overLimit ? ["?? over-limit.bin"] : []),
+            ].toSorted(),
+          )
+        }),
+        { git: true },
+      ),
+    ),
     TEST_TIMEOUT,
   )
 
@@ -346,57 +333,47 @@ snapshotTests("/undo properties", () => {
   // property covers the pruned-snapshot case.
   revertIt.live(
     "R2: edit then /undo restores the exact bytes of every file",
-    Effect.gen(function* () {
-      const run = yield* caseRunner<RevertServices>()
-      yield* Effect.promise(() =>
-        fc.assert(
-          fc.asyncProperty(editedTurn, (input) =>
-            run(
-              provideTmpdirInstance(
-                Effect.fnUntraced(function* (dir) {
-                  const sessions = yield* Session.Service
-                  const revert = yield* SessionRevert.Service
-                  const at = (file: string) => path.join(dir, file)
+    undoProperty(editedTurn, 60, (input) =>
+      provideTmpdirInstance(
+        Effect.fnUntraced(function* (dir) {
+          const sessions = yield* Session.Service
+          const revert = yield* SessionRevert.Service
+          const at = (file: string) => path.join(dir, file)
 
-                  yield* Effect.forEach(input.base, (file) => put(at(file.path), file.content))
-                  yield* commitAll(dir)
-                  const head = yield* git(dir, "rev-parse", "HEAD")
+          yield* Effect.forEach(input.base, (file) => put(at(file.path), file.content))
+          yield* commitAll(dir)
+          const head = yield* git(dir, "rev-parse", "HEAD")
 
-                  const session = yield* sessions.create({})
-                  const messageID = yield* agentTurn(
-                    session.id,
-                    dir,
-                    input.steps.map((step) =>
-                      Effect.forEach(step, (op) => {
-                        const file = at(input.base[op.file % input.base.length]!.path)
-                        if (op.action.kind === "write") return put(file, op.action.content)
-                        if (op.action.kind === "delete") return del(file)
-                        // A base file can't be a rename target, because R2 compares its bytes.
-                        const to = op.action.to
-                        return input.base.some((item) => item.path === to) ? Effect.void : rename(file, at(to))
-                      }).pipe(Effect.asVoid),
-                    ),
-                    { abortLast: input.abortLast },
-                  )
-
-                  yield* revert.revert({ sessionID: session.id, messageID })
-
-                  for (const file of input.base) {
-                    expect(yield* exists(at(file.path))).toBe(true)
-                    expect(yield* readBytes(at(file.path))).toEqual(file.content)
-                  }
-                  expect(yield* gitStatus(dir)).toEqual([])
-                  expect(yield* git(dir, "diff")).toBe("")
-                  expect(yield* git(dir, "rev-parse", "HEAD")).toBe(head)
-                }),
-                { git: true },
-              ),
+          const session = yield* sessions.create({})
+          const messageID = yield* agentTurn(
+            session.id,
+            dir,
+            input.steps.map((step) =>
+              Effect.forEach(step, (op) => {
+                const file = at(input.base[op.file % input.base.length]!.path)
+                if (op.action.kind === "write") return put(file, op.action.content)
+                if (op.action.kind === "delete") return del(file)
+                // A base file can't be a rename target, because R2 compares its bytes.
+                const to = op.action.to
+                return input.base.some((item) => item.path === to) ? Effect.void : rename(file, at(to))
+              }).pipe(Effect.asVoid),
             ),
-          ),
-          assertOptions(60),
-        ),
-      )
-    }),
+            { abortLast: input.abortLast },
+          )
+
+          yield* revert.revert({ sessionID: session.id, messageID })
+
+          for (const file of input.base) {
+            expect(yield* exists(at(file.path))).toBe(true)
+            expect(yield* readBytes(at(file.path))).toEqual(file.content)
+          }
+          expect(yield* gitStatus(dir)).toEqual([])
+          expect(yield* git(dir, "diff")).toBe("")
+          expect(yield* git(dir, "rev-parse", "HEAD")).toBe(head)
+        }),
+        { git: true },
+      ),
+    ),
     TEST_TIMEOUT,
   )
 
@@ -411,48 +388,38 @@ snapshotTests("/undo properties", () => {
   // practical in a test, so an unreadable hash stands in for a pruned snapshot.
   revertIt.live(
     "R2: /undo leaves files untouched when their snapshots were pruned",
-    Effect.gen(function* () {
-      const run = yield* caseRunner<RevertServices>()
-      yield* Effect.promise(() =>
-        fc.assert(
-          fc.asyncProperty(prunedTurn, (input) =>
-            run(
-              provideTmpdirInstance(
-                Effect.fnUntraced(function* (dir) {
-                  const sessions = yield* Session.Service
-                  const revert = yield* SessionRevert.Service
-                  const at = (file: string) => path.join(dir, file)
+    undoProperty(prunedTurn, 25, (input) =>
+      provideTmpdirInstance(
+        Effect.fnUntraced(function* (dir) {
+          const sessions = yield* Session.Service
+          const revert = yield* SessionRevert.Service
+          const at = (file: string) => path.join(dir, file)
 
-                  yield* Effect.forEach(input.files, (file) => put(at(file.path), file.before))
-                  yield* commitAll(dir)
+          yield* Effect.forEach(input.files, (file) => put(at(file.path), file.before))
+          yield* commitAll(dir)
 
-                  const session = yield* sessions.create({})
-                  const messageID = yield* agentTurn(
-                    session.id,
-                    dir,
-                    [
-                      Effect.forEach(input.files, (file) =>
-                        file.agent === undefined ? del(at(file.path)) : put(at(file.path), file.agent),
-                      ).pipe(Effect.asVoid),
-                    ],
-                    { pruned: input.gone },
-                  )
+          const session = yield* sessions.create({})
+          const messageID = yield* agentTurn(
+            session.id,
+            dir,
+            [
+              Effect.forEach(input.files, (file) =>
+                file.agent === undefined ? del(at(file.path)) : put(at(file.path), file.agent),
+              ).pipe(Effect.asVoid),
+            ],
+            { pruned: input.gone },
+          )
 
-                  yield* revert.revert({ sessionID: session.id, messageID })
+          yield* revert.revert({ sessionID: session.id, messageID })
 
-                  for (const file of input.files) {
-                    if (file.agent === undefined) expect(yield* exists(at(file.path))).toBe(false)
-                    if (file.agent !== undefined) expect(yield* readBytes(at(file.path))).toEqual(file.agent)
-                  }
-                }),
-                { git: true },
-              ),
-            ),
-          ),
-          assertOptions(25),
-        ),
-      )
-    }),
+          for (const file of input.files) {
+            if (file.agent === undefined) expect(yield* exists(at(file.path))).toBe(false)
+            if (file.agent !== undefined) expect(yield* readBytes(at(file.path))).toEqual(file.agent)
+          }
+        }),
+        { git: true },
+      ),
+    ),
     TEST_TIMEOUT,
   )
 
@@ -467,44 +434,32 @@ snapshotTests("/undo properties", () => {
   // list of lines.
   revertIt.live(
     "R3: /undo agrees with a line-by-line model when edits don't overlap",
-    Effect.gen(function* () {
-      const run = yield* caseRunner<RevertServices>()
-      yield* Effect.promise(() =>
-        fc.assert(
-          fc.asyncProperty(separatedEdits, (input) =>
-            run(
-              provideTmpdirInstance(
-                Effect.fnUntraced(function* (dir) {
-                  const sessions = yield* Session.Service
-                  const revert = yield* SessionRevert.Service
-                  const file = path.join(dir, "Foo.java")
-                  const model = modelSeparatedEdits(input)
+    undoProperty(separatedEdits, 25, (input) =>
+      provideTmpdirInstance(
+        Effect.fnUntraced(function* (dir) {
+          const sessions = yield* Session.Service
+          const revert = yield* SessionRevert.Service
+          const file = path.join(dir, "Foo.java")
+          const model = modelSeparatedEdits(input)
 
-                  yield* put(file, model.base)
-                  yield* commitAll(dir)
+          yield* put(file, model.base)
+          yield* commitAll(dir)
 
-                  const session = yield* sessions.create({})
-                  const messageID = yield* agentTurn(session.id, dir, [put(file, model.afterAgent)])
-                  // The turn is over, so this edit is the user's.
-                  yield* put(file, model.afterUser)
+          const session = yield* sessions.create({})
+          const messageID = yield* agentTurn(session.id, dir, [put(file, model.afterAgent)])
+          // The turn is over, so this edit is the user's.
+          yield* put(file, model.afterUser)
 
-                  yield* revert.revert({ sessionID: session.id, messageID })
+          yield* revert.revert({ sessionID: session.id, messageID })
 
-                  expect(yield* readBytes(file)).toEqual(model.expected)
-                }),
-                { git: true },
-              ),
-            ),
-          ),
-          assertOptions(25),
-        ),
-      )
-    }),
+          expect(yield* readBytes(file)).toEqual(model.expected)
+        }),
+        { git: true },
+      ),
+    ),
     TEST_TIMEOUT,
   )
 })
-
-const stub = <S>(service: { of: (impl: S) => S }, impl: unknown) => service.of(impl as S)
 
 // R5 needs the real request the model would receive, so unlike the file
 // properties it runs through SessionPrompt against the fake LLM server. MCP and
@@ -523,62 +478,17 @@ const promptIt = testEffect(
     [
       [
         MCP.node,
-        Layer.succeed(
-          MCP.Service,
-          stub(MCP.Service, {
-            status: () => Effect.succeed({}),
-            clients: () => Effect.succeed({}),
-            instructions: () => Effect.succeed([]),
-            tools: () => Effect.succeed({}),
-            prompts: () => Effect.succeed({}),
-            resources: () => Effect.succeed({}),
-            resourceTemplates: () => Effect.succeed({}),
-          }),
-        ),
+        Layer.mock(MCP.Service, {
+          clients: () => Effect.succeed({}),
+          tools: () => Effect.succeed({}),
+          instructions: () => Effect.succeed([]),
+        }),
       ],
-      [
-        LSP.node,
-        Layer.succeed(
-          LSP.Service,
-          stub(LSP.Service, {
-            init: () => Effect.void,
-            status: () => Effect.succeed([]),
-            hasClients: () => Effect.succeed(false),
-            touchFile: () => Effect.void,
-            diagnostics: () => Effect.succeed({}),
-          }),
-        ),
-      ],
+      [LSP.node, Layer.mock(LSP.Service, {})],
       [RuntimeFlags.node, RuntimeFlags.layer({ experimentalEventSystem: true })],
     ],
   ),
 )
-
-const providerConfig = (url: string) => ({
-  provider: {
-    test: {
-      name: "Test",
-      id: "test",
-      env: [],
-      npm: "@ai-sdk/openai-compatible",
-      models: {
-        "test-model": {
-          id: "test-model",
-          name: "Test Model",
-          attachment: false,
-          reasoning: false,
-          temperature: false,
-          tool_call: true,
-          release_date: "2025-01-01",
-          limit: { context: 100000, output: 10000 },
-          cost: { input: 0, output: 0 },
-          options: {},
-        },
-      },
-      options: { apiKey: "test-key", baseURL: url },
-    },
-  },
-})
 
 // JSON escapes characters such as quotes, so a search of the serialized request
 // has to look for the escaped form or it would miss the secret and pass wrongly.
@@ -607,92 +517,76 @@ describe("/undo context properties", () => {
   // where that turn never happened.
   promptIt.live(
     "R5: adding then undoing a turn leaves the next request unchanged",
-    Effect.gen(function* () {
-      const run = yield* caseRunner<
-        | Session.Service
-        | SessionRevert.Service
-        | SessionPrompt.Service
-        | TestLLMServer
-        | ChildProcessSpawner.ChildProcessSpawner
-      >()
-      yield* Effect.promise(() =>
-        fc.assert(
-          fc.asyncProperty(undoneTurn, (input) =>
-            run(
-              provideTmpdirServer(
-                Effect.fnUntraced(function* ({ dir, llm }) {
-                  const sessions = yield* Session.Service
-                  const revert = yield* SessionRevert.Service
-                  const prompt = yield* SessionPrompt.Service
+    undoProperty(undoneTurn, 20, (input) =>
+      provideTmpdirServer(
+        Effect.fnUntraced(function* ({ dir, llm }) {
+          const sessions = yield* Session.Service
+          const revert = yield* SessionRevert.Service
+          const prompt = yield* SessionPrompt.Service
 
-                  const sendSecondPrompt = Effect.fnUntraced(function* (sessionID: SessionID) {
-                    yield* llm.text("ok")
-                    const earlier = (yield* llm.inputs).length
-                    yield* prompt.prompt({
-                      sessionID,
-                      agent: "build",
-                      model: ref,
-                      parts: [{ type: "text", text: input.secondPrompt }],
-                    })
-                    return (yield* llm.inputs).slice(earlier)
-                  })
+          const sendSecondPrompt = Effect.fnUntraced(function* (sessionID: SessionID) {
+            yield* llm.text("ok")
+            const earlier = (yield* llm.inputs).length
+            yield* prompt.prompt({
+              sessionID,
+              agent: "build",
+              model: ref,
+              parts: [{ type: "text", text: input.secondPrompt }],
+            })
+            return (yield* llm.inputs).slice(earlier)
+          })
 
-                  // A fixed title stops a title-generation request from taking
-                  // the queued reply. It isn't part of the conversation context.
-                  const undone = yield* sessions.create({ title: "undone" })
-                  yield* addEarlierTurns(undone.id, dir, input.earlierTurns)
-                  const user = yield* addUser(undone.id, input.firstPrompt)
-                  if (input.carriers.includes("attachment")) {
-                    yield* addText(undone.id, user.id, `Attached notes.txt: ${input.secret}`, true)
-                  }
-                  yield* Effect.forEach(
-                    Array.from({ length: input.assistantMessages }, (_, index) => index),
-                    Effect.fnUntraced(function* (index) {
-                      const assistant = yield* addAssistant(undone.id, user.id, dir)
-                      if (input.carriers.includes("assistant-text")) {
-                        yield* addText(undone.id, assistant.id, `notes.txt says ${input.secret}`)
-                      }
-                      if (!input.carriers.includes("tool-output")) return
-                      yield* sessions.updatePart({
-                        id: PartID.ascending(),
-                        messageID: assistant.id,
-                        sessionID: undone.id,
-                        type: "tool" as const,
-                        tool: "read",
-                        callID: `call-${index}`,
-                        state: {
-                          status: "completed" as const,
-                          input: { filePath: "notes.txt" },
-                          output: input.secret,
-                          title: "notes.txt",
-                          metadata: {},
-                          time: { start: 0, end: 1 },
-                        },
-                      })
-                    }),
-                  )
+          // A fixed title stops a title-generation request from taking
+          // the queued reply. It isn't part of the conversation context.
+          const undone = yield* sessions.create({ title: "undone" })
+          yield* addEarlierTurns(undone.id, dir, input.earlierTurns)
+          const user = yield* addUser(undone.id, input.firstPrompt)
+          if (input.carriers.includes("attachment")) {
+            yield* addText(undone.id, user.id, `Attached notes.txt: ${input.secret}`, true)
+          }
+          yield* Effect.forEach(
+            Array.from({ length: input.assistantMessages }, (_, index) => index),
+            Effect.fnUntraced(function* (index) {
+              const assistant = yield* addAssistant(undone.id, user.id, dir)
+              if (input.carriers.includes("assistant-text")) {
+                yield* addText(undone.id, assistant.id, `notes.txt says ${input.secret}`)
+              }
+              if (!input.carriers.includes("tool-output")) return
+              yield* sessions.updatePart({
+                id: PartID.ascending(),
+                messageID: assistant.id,
+                sessionID: undone.id,
+                type: "tool" as const,
+                tool: "read",
+                callID: `call-${index}`,
+                state: {
+                  status: "completed" as const,
+                  input: { filePath: "notes.txt" },
+                  output: input.secret,
+                  title: "notes.txt",
+                  metadata: {},
+                  time: { start: 0, end: 1 },
+                },
+              })
+            }),
+          )
 
-                  yield* revert.revert({ sessionID: undone.id, messageID: user.id })
-                  const afterUndo = yield* sendSecondPrompt(undone.id)
+          yield* revert.revert({ sessionID: undone.id, messageID: user.id })
+          const afterUndo = yield* sendSecondPrompt(undone.id)
 
-                  const control = yield* sessions.create({ title: "control" })
-                  yield* addEarlierTurns(control.id, dir, input.earlierTurns)
-                  const withoutTurn = yield* sendSecondPrompt(control.id)
+          const control = yield* sessions.create({ title: "control" })
+          yield* addEarlierTurns(control.id, dir, input.earlierTurns)
+          const withoutTurn = yield* sendSecondPrompt(control.id)
 
-                  expect(afterUndo.length).toBeGreaterThan(0)
-                  const sent = JSON.stringify(afterUndo)
-                  expect(sent).not.toContain(inRequest(input.secret))
-                  expect(sent).not.toContain(inRequest(input.firstPrompt))
-                  expect(afterUndo.at(-1)?.messages).toEqual(withoutTurn.at(-1)?.messages)
-                }),
-                { git: true, config: providerConfig },
-              ),
-            ),
-          ),
-          assertOptions(20),
-        ),
-      )
-    }),
+          expect(afterUndo.length).toBeGreaterThan(0)
+          const sent = JSON.stringify(afterUndo)
+          expect(sent).not.toContain(inRequest(input.secret))
+          expect(sent).not.toContain(inRequest(input.firstPrompt))
+          expect(afterUndo.at(-1)?.messages).toEqual(withoutTurn.at(-1)?.messages)
+        }),
+        { git: true, config: testProviderConfig },
+      ),
+    ),
     TEST_TIMEOUT,
   )
 })
