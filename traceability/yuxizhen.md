@@ -46,4 +46,6 @@ The `test` workflow's unit job failed at `dcdec01` ([run 41577381600](https://gi
 
 The stall was forced, so this shows a way to get the CI symptom, not that the CI run failed this way.
 
-**Status:** not fixed here because it's outside the /undo work. Possible follow-ups are raising `HeaderTimeoutError` when the timeout fired before `fetch` returned, and widening the test's timing margin.
+**Other CI instability:** at `3606911`, the push run's `Run unit tests` step hit its 10-minute limit while the pull request run passed. At `380419e`, the push run passed while the pull request run failed with exit code 1. The failing test in that second run wasn't identified. The /undo property step passed in all four runs.
+
+**Status:** to reduce these failures, the test's timeout and body delay went from 500 ms and 1,000 ms to 5,000 ms and 5,500 ms, and the `Run unit tests` limit went from 10 to 15 minutes. The race itself is still in `provider.ts` because it's outside the /undo work. A possible follow-up is raising `HeaderTimeoutError` when the timeout fired before `fetch` returned.
