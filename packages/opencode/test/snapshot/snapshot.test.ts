@@ -387,6 +387,134 @@ it.instance(
   { git: true },
 )
 
+// Runs one agent step on a tracked repo, then applies the user's edit, returning
+// what SessionRevert passes to Snapshot.revert.
+const agentStepThenUser = Effect.fn("SnapshotTest.agentStepThenUser")(function* (
+  files: Record<
+    string,
+    { before: string | Uint8Array | undefined; agent: string | Uint8Array; user?: string | Uint8Array }
+  >,
+) {
+  const { directory: dir } = yield* TestInstance
+  const snapshot = yield* Snapshot.Service
+  const paths = Object.entries(files).map(([name, content]) => ({ file: path.join(dir, name), ...content }))
+  yield* Effect.forEach(paths, (item) => (item.before === undefined ? Effect.void : write(item.file, item.before)))
+  const before = yield* snapshot.track()
+  yield* Effect.forEach(paths, (item) => write(item.file, item.agent))
+  const end = yield* snapshot.track()
+  const patch = yield* snapshot.patch(before!)
+  yield* Effect.forEach(paths, (item) => (item.user === undefined ? Effect.void : write(item.file, item.user)))
+  return { dir, snapshot, patch: { ...patch, end } }
+})
+
+const readRaw = (file: string) => Effect.promise(() => fs.readFile(file).then((data) => new Uint8Array(data)))
+
+it.instance(
+  "revert keeps a user edit that doesn't overlap the agent's change",
+  Effect.gen(function* () {
+    const { dir, snapshot, patch } = yield* agentStepThenUser({
+      "Foo.java": { before: "a\nb\nc\nd\ne\n", agent: "a\nAGENT\nc\nd\ne\n", user: "a\nAGENT\nc\nd\nUSER\n" },
+    })
+    yield* snapshot.revert([patch])
+    expect(yield* readText(path.join(dir, "Foo.java"))).toBe("a\nb\nc\nd\nUSER\n")
+  }),
+  { git: true },
+)
+
+it.instance(
+  "revert merges text that isn't valid UTF-8 without changing its bytes",
+  Effect.gen(function* () {
+    const latin = (text: string) => new Uint8Array(Buffer.from(text, "latin1"))
+    const { dir, snapshot, patch } = yield* agentStepThenUser({
+      "latin.txt": {
+        before: latin("caf\xe9\nb\nc\nd\ne\n"),
+        agent: latin("caf\xe9\nAGENT\nc\nd\ne\n"),
+        user: latin("caf\xe9\nAGENT\nc\nd\nna\xefve\n"),
+      },
+    })
+    yield* snapshot.revert([patch])
+    expect(yield* readRaw(path.join(dir, "latin.txt"))).toEqual(latin("caf\xe9\nb\nc\nd\nna\xefve\n"))
+  }),
+  { git: true },
+)
+
+it.instance(
+  "revert leaves a conflicting file byte-identical and still reverts other files",
+  Effect.gen(function* () {
+    const conflict = "a\nUSER\nc\n"
+    const { dir, snapshot, patch } = yield* agentStepThenUser({
+      "Foo.java": { before: "a\nb\nc\n", agent: "a\nAGENT\nc\n", user: conflict },
+      "Other.java": { before: "other\n", agent: "other changed\n" },
+    })
+    yield* snapshot.revert([patch])
+    expect(yield* readText(path.join(dir, "Foo.java"))).toBe(conflict)
+    expect(yield* readText(path.join(dir, "Other.java"))).toBe("other\n")
+  }),
+  { git: true },
+)
+
+it.instance(
+  "revert treats an edit on a line next to the agent's change as a conflict",
+  Effect.gen(function* () {
+    const adjacent = "a\nAGENT\nUSER\nd\n"
+    const { dir, snapshot, patch } = yield* agentStepThenUser({
+      "Foo.java": { before: "a\nb\nc\nd\n", agent: "a\nAGENT\nc\nd\n", user: adjacent },
+    })
+    yield* snapshot.revert([patch])
+    expect(yield* readText(path.join(dir, "Foo.java"))).toBe(adjacent)
+  }),
+  { git: true },
+)
+
+it.instance(
+  "revert keeps a file the agent created if the user edited it afterwards",
+  Effect.gen(function* () {
+    const { dir, snapshot, patch } = yield* agentStepThenUser({
+      "Helper.java": { before: undefined, agent: "agent\n", user: "agent\nuser\n" },
+    })
+    yield* snapshot.revert([patch])
+    expect(yield* readText(path.join(dir, "Helper.java"))).toBe("agent\nuser\n")
+  }),
+  { git: true },
+)
+
+it.instance(
+  "revert leaves a binary file the user edited byte-identical",
+  Effect.gen(function* () {
+    const edited = new Uint8Array([0, 1, 2, 3])
+    const { dir, snapshot, patch } = yield* agentStepThenUser({
+      "image.bin": { before: new Uint8Array([0, 1]), agent: new Uint8Array([0, 2]), user: edited },
+    })
+    yield* snapshot.revert([patch])
+    expect(yield* readRaw(path.join(dir, "image.bin"))).toEqual(edited)
+  }),
+  { git: true },
+)
+
+it.instance(
+  "revert leaves a file untouched if the end snapshot can't be read",
+  Effect.gen(function* () {
+    const { dir, snapshot, patch } = yield* agentStepThenUser({
+      "Foo.java": { before: "before\n", agent: "agent\n" },
+    })
+    yield* snapshot.revert([{ ...patch, end: "0".repeat(40) }])
+    expect(yield* readText(path.join(dir, "Foo.java"))).toBe("agent\n")
+  }),
+  { git: true },
+)
+
+it.instance(
+  "revert without an end snapshot restores the file as before",
+  Effect.gen(function* () {
+    const { dir, snapshot, patch } = yield* agentStepThenUser({
+      "Foo.java": { before: "before\n", agent: "agent\n", user: "agent\nuser\n" },
+    })
+    yield* snapshot.revert([{ hash: patch.hash, files: patch.files }])
+    expect(yield* readText(path.join(dir, "Foo.java"))).toBe("before\n")
+  }),
+  { git: true },
+)
+
 it.instance(
   "unicode filenames modification and restore",
   Effect.gen(function* () {

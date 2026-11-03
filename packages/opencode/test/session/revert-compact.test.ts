@@ -593,6 +593,53 @@ describe("revert + compact workflow", () => {
     ),
   )
 
+  // An aborted step records a patch but no step-finish. Pairing it with the
+  // previous step's end would make the agent's changes look like the user's.
+  it.live(
+    "aborted step after a step with no changes is still fully reverted",
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          const session = yield* Session.Service
+          const revert = yield* SessionRevert.Service
+          const snapshot = yield* Snapshot.Service
+          const file = path.join(dir, "a.txt")
+          yield* write(file, "before")
+
+          const sid = (yield* session.create({})).id
+          const u = yield* user(sid)
+          yield* text(sid, u.id, "do the work")
+          const a = yield* assistant(sid, u.id, dir)
+          const start = yield* snapshot.track()
+          const part = { messageID: a.id, sessionID: sid }
+          yield* session.updatePart({ ...part, id: PartID.ascending(), type: "step-start", snapshot: start })
+          yield* session.updatePart({
+            ...part,
+            id: PartID.ascending(),
+            type: "step-finish",
+            reason: "stop",
+            snapshot: start,
+            cost: 0,
+            tokens,
+          })
+          yield* session.updatePart({ ...part, id: PartID.ascending(), type: "step-start", snapshot: start })
+          yield* write(file, "aborted mid-step")
+          const patch = yield* snapshot.patch(start!)
+          yield* session.updatePart({
+            ...part,
+            id: PartID.ascending(),
+            type: "patch",
+            hash: patch.hash,
+            files: patch.files,
+          })
+
+          yield* revert.revert({ sessionID: sid, messageID: u.id })
+          expect(yield* read(file)).toBe("before")
+        }),
+      { git: true },
+    ),
+  )
+
   it.live(
     "restore same file in sequential order",
     provideTmpdirInstance(

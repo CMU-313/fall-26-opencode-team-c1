@@ -42,13 +42,21 @@ const layer = Layer.effect(
       const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
 
       let rev: Session.Info["revert"]
-      const patches: Snapshot.Patch[] = []
+      const patches: Snapshot.RevertPatch[] = []
+      let stepEnd: string | undefined
       for (const msg of all) {
         if (msg.info.role === "user") lastUser = msg.info
         const remaining = []
         for (const part of msg.parts) {
           if (rev) {
-            if (part.type === "patch") patches.push(part)
+            // The processor saves step-finish just before its patch. A step that was aborted
+            // saves only a patch, so step-start clears any end left by a previous step.
+            if (part.type === "step-start") stepEnd = undefined
+            if (part.type === "step-finish") stepEnd = part.snapshot
+            if (part.type === "patch") {
+              patches.push({ hash: part.hash, files: part.files, end: stepEnd })
+              stepEnd = undefined
+            }
             continue
           }
 

@@ -16,6 +16,9 @@ export const Patch = Schema.Struct({
   files: Schema.mutable(Schema.Array(Schema.String)),
 })
 export type Patch = typeof Patch.Type
+// `end` is the tree at the end of the step that produced the patch. Without it
+// (an aborted step records none) user edits can't be told apart from the agent's.
+export type RevertPatch = Patch & { readonly end?: string }
 
 export const FileDiff = Info
 export type FileDiff = typeof FileDiff.Type
@@ -32,8 +35,11 @@ const toGitSeparators = (file: string) => (path.sep === "\\" ? file.replaceAll("
 interface GitResult {
   readonly code: ChildProcessSpawner.ExitCode
   readonly text: string
+  readonly bytes: Uint8Array
   readonly stderr: string
 }
+
+type RevertOp = { hash: string; file: string; rel: string }
 
 type State = Omit<Interface, "init">
 
@@ -43,7 +49,7 @@ export interface Interface {
   readonly track: () => Effect.Effect<string | undefined>
   readonly patch: (hash: string) => Effect.Effect<Patch>
   readonly restore: (snapshot: string) => Effect.Effect<void>
-  readonly revert: (patches: Patch[]) => Effect.Effect<void>
+  readonly revert: (patches: RevertPatch[]) => Effect.Effect<void>
   readonly diff: (hash: string) => Effect.Effect<string>
   readonly diffFull: (from: string, to: string) => Effect.Effect<FileDiff[]>
 }
@@ -91,6 +97,7 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
             return {
               code: ChildProcessSpawner.ExitCode(result.exitCode),
               text: result.stdout.toString("utf8"),
+              bytes: result.stdout,
               stderr: result.stderr.toString("utf8"),
             } satisfies GitResult
           },
@@ -98,6 +105,7 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
             Effect.succeed({
               code: ChildProcessSpawner.ExitCode(1),
               text: "",
+              bytes: new Uint8Array(),
               stderr: err instanceof Error ? err.message : String(err),
             }),
           ),
@@ -410,16 +418,58 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           )
         })
 
-        const revert = Effect.fnUntraced(function* (patches: Patch[]) {
+        const regularFile = Effect.fnUntraced(function* (tree: string, rel: string) {
+          const entry = yield* git([...literal, ...args(["ls-tree", "-z", tree, "--", rel])], { cwd: state.worktree })
+          const [mode, , oid] = entry.text.split("\t")[0]!.split(" ")
+          if (entry.code !== 0 || !oid || !mode?.startsWith("100")) return
+          const blob = yield* git(args(["cat-file", "blob", oid]), { cwd: state.worktree })
+          return blob.code === 0 ? blob.bytes : undefined
+        })
+
+        // Takes the agent's changes out of a file the user edited afterwards. The file is only
+        // written after a clean merge, so anything else leaves it byte-identical.
+        const removeAgentChanges = Effect.fnUntraced(
+          function* (op: RevertOp, end: string, current: string) {
+            const [before, agent, edited] = yield* Effect.all(
+              [regularFile(op.hash, op.rel), regularFile(end, op.rel), regularFile(current, op.rel)],
+              { concurrency: 3 },
+            )
+            // Binary files fail in merge-file. These cases have no version to merge against:
+            // created by the agent then edited, deleted by the agent then recreated, or deleted by the user.
+            if (!before || !agent || !edited) {
+              yield* Effect.logInfo("keeping file edited after the agent's changes", { file: op.file })
+              return
+            }
+            const dir = yield* fs.makeTempDirectoryScoped({ prefix: "opencode-revert-" })
+            yield* Effect.all([
+              fs.writeFile(path.join(dir, "before"), before),
+              fs.writeFile(path.join(dir, "agent"), agent),
+              fs.writeFile(path.join(dir, "edited"), edited),
+            ])
+            const merged = yield* git(["merge-file", "-p", "edited", "agent", "before"], { cwd: dir })
+            if (merged.code !== 0) {
+              yield* Effect.logInfo("keeping file with edits that conflict with the agent's", { file: op.file })
+              return
+            }
+            yield* fs.writeFile(op.file, merged.bytes)
+          },
+          Effect.scoped,
+          Effect.catch((err) => Effect.logWarning("failed to merge reverted file", { err })),
+        )
+
+        const revert = Effect.fnUntraced(function* (patches: RevertPatch[]) {
           return yield* locked(
             Effect.gen(function* () {
-              const ops: { hash: string; file: string; rel: string }[] = []
+              const all: RevertOp[] = []
               const seen = new Set<string>()
+              const ends = new Map<string, string | undefined>()
               for (const item of patches) {
                 for (const file of item.files) {
+                  // The last step to touch a file holds the agent's final version of it.
+                  ends.set(file, item.end)
                   if (seen.has(file)) continue
                   seen.add(file)
-                  ops.push({
+                  all.push({
                     hash: item.hash,
                     file,
                     rel: toGitSeparators(path.relative(state.worktree, file)),
@@ -427,7 +477,34 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
                 }
               }
 
-              const single = Effect.fnUntraced(function* (op: (typeof ops)[number]) {
+              const knownEnds = new Set([...ends.values()].filter((end) => end !== undefined))
+              yield* add()
+              const current = (yield* git(args(["write-tree"]), { cwd: state.directory })).text.trim()
+              const changedSince = new Map(
+                yield* Effect.forEach(knownEnds, (end) =>
+                  git(args(["diff-tree", "-r", "--no-renames", "--name-only", "-z", end, current]), {
+                    cwd: state.worktree,
+                  }).pipe(
+                    Effect.map(
+                      (result) =>
+                        [
+                          end,
+                          result.code === 0 ? new Set(result.text.split("\0").filter(Boolean)) : undefined,
+                        ] as const,
+                    ),
+                  ),
+                ),
+              )
+              // A tree git can't read (such as a pruned snapshot) counts as edited, which leaves the file alone.
+              const isEdited = (op: RevertOp) => {
+                const end = ends.get(op.file)
+                if (end === undefined) return false
+                return changedSince.get(end)?.has(op.rel) ?? true
+              }
+              yield* Effect.forEach(all.filter(isEdited), (op) => removeAgentChanges(op, ends.get(op.file)!, current))
+              const ops = all.filter((op) => !isEdited(op))
+
+              const single = Effect.fnUntraced(function* (op: RevertOp) {
                 yield* Effect.logInfo("reverting", { file: op.file, hash: op.hash })
                 const result = yield* git([...literal, ...args(["checkout", op.hash, "--", op.file])], {
                   cwd: state.worktree,
@@ -788,7 +865,7 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
       restore: Effect.fn("Snapshot.restore")(function* (snapshot: string) {
         return yield* InstanceState.useEffect(state, (s) => s.restore(snapshot))
       }),
-      revert: Effect.fn("Snapshot.revert")(function* (patches: Patch[]) {
+      revert: Effect.fn("Snapshot.revert")(function* (patches: RevertPatch[]) {
         return yield* InstanceState.useEffect(state, (s) => s.revert(patches))
       }),
       diff: Effect.fn("Snapshot.diff")(function* (hash: string) {
