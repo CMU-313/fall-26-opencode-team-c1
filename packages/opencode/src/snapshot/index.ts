@@ -24,7 +24,11 @@ const prune = "7.days"
 const limit = 2 * 1024 * 1024
 const core = ["-c", "core.longpaths=true", "-c", "core.symlinks=true"]
 const cfg = ["-c", "core.autocrlf=false", ...core]
+// Paths are exact names: without this, reverting `[a].txt` also overwrites `a.txt`, and a leading colon is pathspec magic.
+const literal = ["--literal-pathspecs", ...core]
 const quote = [...cfg, "-c", "core.quotepath=false"]
+// Backslash is only a separator on Windows; elsewhere it's a valid filename character.
+const toGitSeparators = (file: string) => (path.sep === "\\" ? file.replaceAll("\\", "/") : file)
 interface GitResult {
   readonly code: ChildProcessSpawner.ExitCode
   readonly text: string
@@ -351,7 +355,12 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
             Effect.gen(function* () {
               yield* add()
               const result = yield* git(
-                [...quote, ...args(["diff", "--cached", "--no-ext-diff", "--name-only", hash, "--", "."])],
+                // -z keeps names raw; plain output C-quotes names containing quotes, backslashes, or tabs.
+                // --no-renames lists both sides of a rename; otherwise the old path is omitted and never restored.
+                [
+                  ...quote,
+                  ...args(["diff", "--cached", "--no-ext-diff", "--no-renames", "--name-only", "-z", hash, "--", "."]),
+                ],
                 {
                   cwd: state.directory,
                 },
@@ -360,11 +369,7 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
                 yield* Effect.logWarning("failed to get diff", { hash, exitCode: result.code })
                 return { hash, files: [] }
               }
-              const files = result.text
-                .trim()
-                .split("\n")
-                .map((x) => x.trim())
-                .filter(Boolean)
+              const files = result.text.split("\0").filter(Boolean)
 
               // Hide ignored-file removals from the user-facing patch output.
               const ignored = yield* ignore(files)
@@ -373,7 +378,7 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
                 hash,
                 files: files
                   .filter((item) => !ignored.has(item))
-                  .map((x) => path.join(state.worktree, x).replaceAll("\\", "/")),
+                  .map((x) => toGitSeparators(path.join(state.worktree, x))),
               }
             }),
           )
@@ -417,18 +422,18 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
                   ops.push({
                     hash: item.hash,
                     file,
-                    rel: path.relative(state.worktree, file).replaceAll("\\", "/"),
+                    rel: toGitSeparators(path.relative(state.worktree, file)),
                   })
                 }
               }
 
               const single = Effect.fnUntraced(function* (op: (typeof ops)[number]) {
                 yield* Effect.logInfo("reverting", { file: op.file, hash: op.hash })
-                const result = yield* git([...core, ...args(["checkout", op.hash, "--", op.file])], {
+                const result = yield* git([...literal, ...args(["checkout", op.hash, "--", op.file])], {
                   cwd: state.worktree,
                 })
                 if (result.code === 0) return
-                const tree = yield* git([...core, ...args(["ls-tree", op.hash, "--", op.rel])], {
+                const tree = yield* git([...literal, ...args(["ls-tree", op.hash, "--", op.rel])], {
                   cwd: state.worktree,
                 })
                 if (tree.code === 0 && tree.text.trim()) {
@@ -464,7 +469,11 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
                 }
 
                 const tree = yield* git(
-                  [...core, ...args(["ls-tree", "--name-only", first.hash, "--", ...run.map((item) => item.rel)])],
+                  // -z keeps names raw; plain output escapes non-ASCII names, which would read as missing and get deleted.
+                  [
+                    ...literal,
+                    ...args(["ls-tree", "--name-only", "-z", first.hash, "--", ...run.map((item) => item.rel)]),
+                  ],
                   {
                     cwd: state.worktree,
                   },
@@ -482,18 +491,12 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
                   continue
                 }
 
-                const have = new Set(
-                  tree.text
-                    .trim()
-                    .split("\n")
-                    .map((item) => item.trim())
-                    .filter(Boolean),
-                )
+                const have = new Set(tree.text.split("\0").filter(Boolean))
                 const list = run.filter((item) => have.has(item.rel))
                 if (list.length) {
                   yield* Effect.logInfo("reverting", { hash: first.hash, files: list.length })
                   const result = yield* git(
-                    [...core, ...args(["checkout", first.hash, "--", ...list.map((item) => item.file)])],
+                    [...literal, ...args(["checkout", first.hash, "--", ...list.map((item) => item.file)])],
                     {
                       cwd: state.worktree,
                     },

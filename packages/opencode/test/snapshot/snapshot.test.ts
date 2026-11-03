@@ -21,6 +21,7 @@ const it = testEffect(
 )
 // Windows forbids both * and : in directory names.
 const nonWindowsIt = process.platform === "win32" ? it.live.skip : it.live
+const nonWindowsInstance = process.platform === "win32" ? it.instance.skip : it.instance
 
 // Git always outputs /-separated paths internally. Snapshot.patch() joins them
 // with path.join (which produces \ on Windows) then normalizes back to /.
@@ -311,7 +312,82 @@ it.instance(
   { git: true },
 )
 
-it.instance.skip(
+// git quotes or escapes these names in plain output, and treats a leading colon
+// as pathspec magic. Two files in one patch reach the batched revert path.
+nonWindowsInstance(
+  "revert restores files with names git quotes or escapes",
+  Effect.gen(function* () {
+    const { directory: dir } = yield* TestInstance
+    const snapshot = yield* Snapshot.Service
+    const names = [
+      'quote"d.txt',
+      "back\\slash.txt",
+      "tab\tname.txt",
+      "café.txt",
+      "日本語/ファイル.md",
+      ":(top)magic.txt",
+    ]
+    yield* Effect.forEach(names, (name) => write(path.join(dir, name), `original ${name}`))
+    yield* write(path.join(dir, "other.txt"), "original other")
+    const before = yield* snapshot.track()
+    expect(before).toBeTruthy()
+    yield* Effect.forEach(names, (name) => write(path.join(dir, name), "changed"))
+    yield* write(path.join(dir, "other.txt"), "changed")
+    const patch = yield* snapshot.patch(before!)
+    expect(patch.files).toHaveLength(names.length + 1)
+    yield* snapshot.revert([patch])
+    for (const name of names) expect(yield* readText(path.join(dir, name))).toBe(`original ${name}`)
+    expect(yield* readText(path.join(dir, "other.txt"))).toBe("original other")
+  }),
+  { git: true },
+)
+
+// Each step's revert must touch only its own file. As a glob, `[brackets].txt`
+// also matches `a.txt`, which would overwrite it with a mid-turn version.
+nonWindowsInstance(
+  "revert treats glob characters in names literally",
+  Effect.gen(function* () {
+    const { directory: dir } = yield* TestInstance
+    const snapshot = yield* Snapshot.Service
+    const glob = path.join(dir, "[brackets].txt")
+    const sibling = path.join(dir, "a.txt")
+    yield* write(glob, "glob original")
+    yield* write(sibling, "sibling original")
+    const first = yield* snapshot.track()
+    yield* write(sibling, "sibling mid-turn")
+    const firstPatch = yield* snapshot.patch(first!)
+    const second = yield* snapshot.track()
+    yield* write(glob, "glob changed")
+    const secondPatch = yield* snapshot.patch(second!)
+    yield* snapshot.revert([firstPatch, secondPatch])
+    expect(yield* readText(glob)).toBe("glob original")
+    expect(yield* readText(sibling)).toBe("sibling original")
+  }),
+  { git: true },
+)
+
+it.instance(
+  "revert restores the old path of a rename",
+  Effect.gen(function* () {
+    const { directory: dir } = yield* TestInstance
+    const snapshot = yield* Snapshot.Service
+    const before = path.join(dir, "old-name.txt")
+    const after = path.join(dir, "new-name.txt")
+    yield* write(before, "same content")
+    const hash = yield* snapshot.track()
+    yield* rm(before)
+    yield* write(after, "same content")
+    const patch = yield* snapshot.patch(hash!)
+    expect(patch.files).toContain(fwd(before))
+    expect(patch.files).toContain(fwd(after))
+    yield* snapshot.revert([patch])
+    expect(yield* readText(before)).toBe("same content")
+    expect(yield* exists(after)).toBe(false)
+  }),
+  { git: true },
+)
+
+it.instance(
   "unicode filenames modification and restore",
   Effect.gen(function* () {
     const tmp = yield* bootstrap()
