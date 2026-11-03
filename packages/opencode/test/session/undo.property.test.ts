@@ -31,6 +31,7 @@ import { TestLLMServer } from "../lib/llm-server"
 
 // Snapshots skip new untracked files larger than this (src/snapshot/index.ts).
 const SNAPSHOT_LIMIT = 2 * 1024 * 1024
+const PRUNED_SNAPSHOT = "0".repeat(40)
 
 const ref = { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test-model") }
 const tokens = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
@@ -93,6 +94,13 @@ const put = (file: string, content: Uint8Array | string) =>
   })
 const del = (file: string) => Effect.promise(() => fs.rm(file, { force: true }))
 const readBytes = (file: string) => Effect.promise(() => fs.readFile(file).then((data) => new Uint8Array(data)))
+const rename = (from: string, to: string) =>
+  Effect.gen(function* () {
+    if (!(yield* exists(from))) return
+    const data = yield* readBytes(from)
+    yield* del(from)
+    yield* put(to, data)
+  })
 const exists = (file: string) =>
   Effect.promise(() =>
     fs.access(file).then(
@@ -152,48 +160,47 @@ const addText = Effect.fn("test.addText")(function* (
 })
 
 // Records one agent turn the way the session processor does: a snapshot before
-// and after each step, and a patch part computed by the real Snapshot service.
+// each step, a step-finish with a snapshot after it, and a patch only if the step
+// changed files. An aborted step, which can only be the last, has no step-finish.
+// `pruned` stores a hash git can't read in place of the snapshots a prune removes.
 const agentTurn = Effect.fn("test.agentTurn")(function* (
   sessionID: SessionID,
   dir: string,
   steps: ReadonlyArray<Effect.Effect<void>>,
+  options: { abortLast?: boolean; pruned?: "end" | "both" } = {},
 ) {
   const sessions = yield* Session.Service
   const snapshot = yield* Snapshot.Service
   const user = yield* addUser(sessionID, "do the work")
   const assistant = yield* addAssistant(sessionID, user.id, dir)
+  const part = { messageID: assistant.id, sessionID }
   yield* Effect.forEach(
     steps,
-    Effect.fnUntraced(function* (step) {
+    Effect.fnUntraced(function* (step, index) {
       const before = yield* snapshot.track()
       if (!before) throw new Error("expected a snapshot before the step")
+      yield* sessions.updatePart({ ...part, id: PartID.ascending(), type: "step-start", snapshot: before })
       yield* step
-      const after = yield* snapshot.track()
-      if (!after) throw new Error("expected a snapshot after the step")
+      if (!options.abortLast || index < steps.length - 1) {
+        const after = yield* snapshot.track()
+        if (!after) throw new Error("expected a snapshot after the step")
+        yield* sessions.updatePart({
+          ...part,
+          id: PartID.ascending(),
+          type: "step-finish",
+          reason: "stop",
+          snapshot: options.pruned ? PRUNED_SNAPSHOT : after,
+          cost: 0,
+          tokens,
+        })
+      }
       const patch = yield* snapshot.patch(before)
+      if (!patch.files.length) return
       yield* sessions.updatePart({
+        ...part,
         id: PartID.ascending(),
-        messageID: assistant.id,
-        sessionID,
-        type: "step-start",
-        snapshot: before,
-      })
-      yield* sessions.updatePart({
-        id: PartID.ascending(),
-        messageID: assistant.id,
-        sessionID,
-        type: "step-finish",
-        reason: "stop",
-        snapshot: after,
-        cost: 0,
-        tokens,
-      })
-      yield* sessions.updatePart({
-        id: PartID.ascending(),
-        messageID: assistant.id,
-        sessionID,
         type: "patch",
-        hash: patch.hash,
+        hash: options.pruned === "both" ? PRUNED_SNAPSHOT : patch.hash,
         files: patch.files,
       })
     }),
@@ -247,6 +254,8 @@ const anyContent = fc.oneof(
   fc.string({ maxLength: 64 }).map(encode),
 )
 
+const USER_EDIT = encode("edited by the user after the turn\n")
+
 const samePathList = <T extends { path: string }>(item: fc.Arbitrary<T>, minLength: number, maxLength: number) =>
   fc.uniqueArray(item, { selector: (entry) => entry.path, minLength, maxLength })
 
@@ -255,10 +264,18 @@ const samePathList = <T extends { path: string }>(item: fc.Arbitrary<T>, minLeng
 // its own patch and revert must combine them. The three booleans switch on files
 // at the coverage limits: exactly 2 MiB (covered), one byte over (not covered),
 // and gitignored (not covered). They're booleans so that a counterexample shrinks
-// to a readable case and doesn't print megabytes of data.
+// to a readable case and doesn't print megabytes of data. `userEdited` changes a
+// file after the turn ends, so a single turn mixes files /undo must delete with
+// files it must keep.
 const createdTurn = fc.record({
   created: samePathList(
-    fc.record({ path: anyPath, content: anyContent, step: fc.integer({ min: 0, max: 1 }), rewritten: fc.boolean() }),
+    fc.record({
+      path: anyPath,
+      content: anyContent,
+      step: fc.integer({ min: 0, max: 1 }),
+      rewritten: fc.boolean(),
+      userEdited: fc.boolean(),
+    }),
     1,
     6,
   ),
@@ -270,8 +287,9 @@ const createdTurn = fc.record({
 // Generator choice for R2: files are chosen by index so that several operations
 // can hit the same file in a turn. That reaches edit-then-edit, delete-then-
 // recreate, and rewriting a file with the bytes it already had, and several files
-// in one step reach the batched code path in Snapshot.revert.
-const editedTurn = fc.record({
+// in one step reach the batched code path in Snapshot.revert. A step can have no
+// operations, and `abortLast` ends the turn the way an interrupted step does.
+const randomEditedTurn = fc.record({
   base: samePathList(fc.record({ path: anyPath, content: anyContent }), 1, 6),
   steps: fc.array(
     fc.array(
@@ -280,11 +298,91 @@ const editedTurn = fc.record({
         action: fc.oneof(
           { weight: 3, arbitrary: anyContent.map((content) => ({ kind: "write" as const, content })) },
           { weight: 1, arbitrary: fc.constant({ kind: "delete" as const }) },
+          { weight: 1, arbitrary: anyPath.map((to) => ({ kind: "rename" as const, to })) },
         ),
       }),
-      { minLength: 1, maxLength: 5 },
+      { maxLength: 5 },
     ),
     { minLength: 1, maxLength: 3 },
+  ),
+  abortLast: fc.boolean(),
+})
+type EditedTurn = typeof randomEditedTurn extends fc.Arbitrary<infer T> ? T : never
+
+// Steering for R2: these shapes break revert in ways that random turns rarely or
+// never reach, so each one gets a share of the runs. File contents stay generated.
+//
+// A step with no changes records a step-finish but no patch. If an aborted step
+// follows, its patch must not be paired with that earlier step's end snapshot.
+const abortedAfterNoChanges = fc
+  .record({ base: samePathList(fc.record({ path: anyPath, content: anyContent }), 1, 6), content: anyContent })
+  .map(
+    (input): EditedTurn => ({
+      base: input.base,
+      steps: [[], [{ file: 0, action: { kind: "write", content: input.content } }]],
+      abortLast: true,
+    }),
+  )
+
+// Identical content under a new name is what git reports as a rename, which can
+// hide the old path. Git only pairs them if the file isn't empty.
+const renamedFile = fc
+  .record({
+    names: fc.uniqueArray(anyPath, { minLength: 2, maxLength: 2 }),
+    content: anyContent.filter((content) => content.length > 0),
+  })
+  .map(
+    (input): EditedTurn => ({
+      base: [{ path: input.names[0]!, content: input.content }],
+      steps: [[{ file: 0, action: { kind: "rename", to: input.names[1]! } }]],
+      abortLast: false,
+    }),
+  )
+
+// Each pair is a name with glob characters and a sibling that the glob matches.
+// The sibling changes in one step and the glob-named file in the next, so treating
+// the name as a glob restores the sibling from the later, mid-turn snapshot.
+const globCollision = fc
+  .record({
+    names: fc.constantFrom(["[brackets].txt", "a.txt"], ["star*.txt", "starX.txt"], ["quest?.txt", "questX.txt"]),
+    globContent: anyContent,
+    siblingContent: anyContent,
+  })
+  .map(
+    (input): EditedTurn => ({
+      base: [
+        { path: input.names[0]!, content: input.globContent },
+        { path: input.names[1]!, content: input.siblingContent },
+      ],
+      steps: [
+        [{ file: 1, action: { kind: "write", content: encode("sibling changed mid-turn\n") } }],
+        [{ file: 0, action: { kind: "write", content: encode("glob-named file changed\n") } }],
+      ],
+      abortLast: false,
+    }),
+  )
+
+const editedTurn = fc.oneof(
+  { weight: 3, arbitrary: randomEditedTurn },
+  { weight: 1, arbitrary: abortedAfterNoChanges },
+  { weight: 1, arbitrary: renamedFile },
+  { weight: 1, arbitrary: globCollision },
+)
+
+// Generator choice for the pruned clause of R2: `gone` chooses which snapshots are
+// unreadable, and the agent both edits and deletes files, so a prune has to leave
+// each of them as the turn left it. It doesn't generate a pre-turn snapshot missing
+// on its own: /undo currently deletes the file in that case, which breaks R2.
+const prunedTurn = fc.record({
+  gone: fc.constantFrom("end" as const, "both" as const),
+  files: samePathList(
+    fc.record({
+      path: anyPath,
+      before: anyContent,
+      agent: fc.option(anyContent, { nil: undefined, freq: 3 }),
+    }),
+    1,
+    4,
   ),
 })
 
@@ -294,8 +392,10 @@ const editedTurn = fc.record({
 // while still not overlapping. `leading` of 0 and `trailing` of 0 put edits on
 // the first and last lines. `replacement` of 0 deletes lines and 2 grows the
 // file, so the user's edit moves to a different line number after the undo.
-// Every line is unique so that the diff has only one possible alignment.
+// Every line is unique so that the diff has only one possible alignment, and ends
+// in é, which `latin1` writes as a single byte that isn't valid UTF-8.
 const separatedEdits = fc.record({
+  encoding: fc.constantFrom("utf8" as const, "latin1" as const),
   agentFirst: fc.boolean(),
   leading: fc.constantFrom(0, 0, 1, 2),
   trailing: fc.constantFrom(0, 1, 1, 3),
@@ -318,7 +418,7 @@ const modelSeparatedEdits = (input: typeof separatedEdits extends fc.Arbitrary<i
     const owner = (index % 2 === 0) === input.agentFirst ? ("agent" as const) : ("user" as const)
     const gap = index === 0 ? input.leading : segment.gap
     const original = (kind: string, count: number) =>
-      Array.from({ length: count }, (_, line) => `${kind}-${index}-${line}`)
+      Array.from({ length: count }, (_, line) => `${kind}-${index}-${line}-é`)
     return [
       { owner: "none" as const, base: original("gap", gap), replaced: [] as string[] },
       { owner, base: original("base", segment.run), replaced: original(owner, segment.replacement) },
@@ -326,7 +426,7 @@ const modelSeparatedEdits = (input: typeof separatedEdits extends fc.Arbitrary<i
   })
   const tail = {
     owner: "none" as const,
-    base: Array.from({ length: input.trailing }, (_, i) => `tail-${i}`),
+    base: Array.from({ length: input.trailing }, (_, i) => `tail-${i}-é`),
     replaced: [],
   }
   const all = [...blocks, tail]
@@ -335,7 +435,7 @@ const modelSeparatedEdits = (input: typeof separatedEdits extends fc.Arbitrary<i
   const ending = input.finalNewline || input.trailing === 0 ? input.eol : ""
   const render = (pick: (block: (typeof all)[number]) => string[]) => {
     const lines = all.flatMap(pick)
-    return lines.length === 0 ? "" : lines.join(input.eol) + ending
+    return new Uint8Array(Buffer.from(lines.length === 0 ? "" : lines.join(input.eol) + ending, input.encoding))
   }
   return {
     base: render((block) => block.base),
@@ -354,10 +454,11 @@ snapshotTests("/undo properties", () => {
   // sending changed files to R4 and reporting uncovered files under R6.
   // Kind: invariant
   // Acceptance criteria: start with a clean git tree, the agent creates files,
-  // and after /undo `git status` shows a clean tree. A file over the limit stays
-  // on disk, so it's the one entry `git status` may still show.
+  // and after /undo `git status` shows a clean tree. A file over the limit and a
+  // file the user edited after the turn stay on disk, so they're the only entries
+  // `git status` may still show.
   revertIt.live(
-    "R1: every snapshot-covered file the agent created is gone after /undo",
+    "R1: every snapshot-covered file the agent created is gone after /undo unless the user edited it",
     Effect.gen(function* () {
       const run = yield* caseRunner<RevertServices>()
       yield* Effect.promise(() =>
@@ -398,9 +499,17 @@ snapshotTests("/undo properties", () => {
                     secondStep.pipe(Effect.andThen(boundaryFiles), Effect.asVoid),
                   ])
 
+                  yield* Effect.forEach(
+                    input.created.filter((file) => file.userEdited),
+                    (file) => put(at(file.path), USER_EDIT),
+                  )
+
                   yield* revert.revert({ sessionID: session.id, messageID })
 
-                  for (const file of input.created) expect(yield* exists(at(file.path))).toBe(false)
+                  for (const file of input.created) {
+                    if (file.userEdited) expect(yield* readBytes(at(file.path))).toEqual(USER_EDIT)
+                    if (!file.userEdited) expect(yield* exists(at(file.path))).toBe(false)
+                  }
                   if (input.atLimit) expect(yield* exists(at("exact-limit.bin"))).toBe(false)
                   // Snapshots never recorded these, so they must stay on disk.
                   if (input.overLimit) expect(yield* exists(at("over-limit.bin"))).toBe(true)
@@ -408,7 +517,11 @@ snapshotTests("/undo properties", () => {
                   expect(yield* exists(at("kept-tracked.txt"))).toBe(true)
                   expect(yield* exists(at("kept-untracked.local"))).toBe(true)
                   expect(yield* gitStatus(dir)).toEqual(
-                    input.overLimit ? [...clean, "?? over-limit.bin"].toSorted() : clean,
+                    [
+                      ...clean,
+                      ...input.created.filter((file) => file.userEdited).map((file) => `?? ${file.path}`),
+                      ...(input.overLimit ? ["?? over-limit.bin"] : []),
+                    ].toSorted(),
                   )
                 }),
                 { git: true },
@@ -429,8 +542,8 @@ snapshotTests("/undo properties", () => {
   // tree changes, not the git index, HEAD, or commits.
   // Kind: round-trip
   // Acceptance criteria: start with a clean git tree, the agent edits files, and
-  // after /undo `git status` reports a clean tree and `git diff` is empty. The
-  // pruned-snapshot case needs 7 days of aging, so this property doesn't reach it.
+  // after /undo `git status` reports a clean tree and `git diff` is empty. The next
+  // property covers the pruned-snapshot case.
   revertIt.live(
     "R2: edit then /undo restores the exact bytes of every file",
     Effect.gen(function* () {
@@ -456,9 +569,14 @@ snapshotTests("/undo properties", () => {
                     input.steps.map((step) =>
                       Effect.forEach(step, (op) => {
                         const file = at(input.base[op.file % input.base.length]!.path)
-                        return op.action.kind === "write" ? put(file, op.action.content) : del(file)
+                        if (op.action.kind === "write") return put(file, op.action.content)
+                        if (op.action.kind === "delete") return del(file)
+                        // A base file can't be a rename target, because R2 compares its bytes.
+                        const to = op.action.to
+                        return input.base.some((item) => item.path === to) ? Effect.void : rename(file, at(to))
                       }).pipe(Effect.asVoid),
                     ),
+                    { abortLast: input.abortLast },
                   )
 
                   yield* revert.revert({ sessionID: session.id, messageID })
@@ -475,7 +593,63 @@ snapshotTests("/undo properties", () => {
               ),
             ),
           ),
-          assertOptions(40),
+          assertOptions(60),
+        ),
+      )
+    }),
+    TEST_TIMEOUT,
+  )
+
+  // R2: When /undo reverts a turn, each snapshot-covered file (see R1) that the
+  // agent edited or deleted and that hasn't changed since the turn ended returns
+  // to its exact pre-turn content, unless its snapshot was pruned after about 7
+  // days (then it's left untouched and reported under R6), and only the working
+  // tree changes, not the git index, HEAD, or commits.
+  // Kind: invariant
+  // Acceptance criteria: this covers the "unless its snapshot was pruned" clause.
+  // After /undo, every file is exactly as the turn left it. Waiting 7 days isn't
+  // practical in a test, so an unreadable hash stands in for a pruned snapshot.
+  revertIt.live(
+    "R2: /undo leaves files untouched when their snapshots were pruned",
+    Effect.gen(function* () {
+      const run = yield* caseRunner<RevertServices>()
+      yield* Effect.promise(() =>
+        fc.assert(
+          fc.asyncProperty(prunedTurn, (input) =>
+            run(
+              provideTmpdirInstance(
+                Effect.fnUntraced(function* (dir) {
+                  const sessions = yield* Session.Service
+                  const revert = yield* SessionRevert.Service
+                  const at = (file: string) => path.join(dir, file)
+
+                  yield* Effect.forEach(input.files, (file) => put(at(file.path), file.before))
+                  yield* commitAll(dir)
+
+                  const session = yield* sessions.create({})
+                  const messageID = yield* agentTurn(
+                    session.id,
+                    dir,
+                    [
+                      Effect.forEach(input.files, (file) =>
+                        file.agent === undefined ? del(at(file.path)) : put(at(file.path), file.agent),
+                      ).pipe(Effect.asVoid),
+                    ],
+                    { pruned: input.gone },
+                  )
+
+                  yield* revert.revert({ sessionID: session.id, messageID })
+
+                  for (const file of input.files) {
+                    if (file.agent === undefined) expect(yield* exists(at(file.path))).toBe(false)
+                    if (file.agent !== undefined) expect(yield* readBytes(at(file.path))).toEqual(file.agent)
+                  }
+                }),
+                { git: true },
+              ),
+            ),
+          ),
+          assertOptions(25),
         ),
       )
     }),
@@ -489,7 +663,8 @@ snapshotTests("/undo properties", () => {
   // Kind: model / oracle
   // Acceptance criteria: the agent changes some lines and the user edits others
   // by hand. After /undo the agent's lines match the pre-turn content and the
-  // user's edits remain. The oracle is modelSeparatedEdits, a plain list of lines.
+  // user's edits remain, byte for byte. The oracle is modelSeparatedEdits, a plain
+  // list of lines.
   revertIt.live(
     "R3: /undo agrees with a line-by-line model when edits don't overlap",
     Effect.gen(function* () {
@@ -515,7 +690,7 @@ snapshotTests("/undo properties", () => {
 
                   yield* revert.revert({ sessionID: session.id, messageID })
 
-                  expect(new TextDecoder().decode(yield* readBytes(file))).toBe(model.expected)
+                  expect(yield* readBytes(file)).toEqual(model.expected)
                 }),
                 { git: true },
               ),

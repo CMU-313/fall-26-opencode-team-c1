@@ -24,10 +24,8 @@ const it = testEffect(
 
 it.live("headerTimeout does not abort delayed SSE body after headers arrive", () =>
   Effect.gen(function* () {
-    // The timeout is long because a JS thread stalled past it on a busy CI runner can
-    // fire the timer before the headers are handled, which empties the response body.
     const server = yield* Effect.acquireRelease(
-      Effect.promise(() => delayedBodyServer(5_500)),
+      Effect.promise(() => delayedBodyServer(1_000)),
       (server) => Effect.sync(() => server.server.close()),
     )
 
@@ -43,7 +41,7 @@ it.live("headerTimeout does not abort delayed SSE body after headers arrive", ()
 
           expect(yield* Effect.promise(() => result.text)).toBe("late")
         }),
-      { config: providerConfig(server.url, { headerTimeout: 5_000 }) },
+      { config: providerConfig(server.url, { headerTimeout: 500 }) },
     )
   }),
 )
