@@ -1,6 +1,6 @@
-// Property-based tests for the read tool (Project 4, wliu4).
-// Each test checks one requirement from traceability/wliu4.md for every input
-// fast-check generates, not just the single example from Project 3.
+// property-based tests for the read tool (p4, wliu4)
+// each test checks one requirement from traceability/wliu4.md on lots of
+// generated inputs, not just the one example from p3
 
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { afterEach, describe, expect } from "bun:test"
@@ -53,11 +53,10 @@ const baseCtx = (session = "ses_prop"): Tool.Context => ({
   ask: () => Effect.void,
 })
 
-// Stand-in for the session's permission check. It applies the same rule as
-// Permission.ask in src/permission/index.ts: evaluate each pattern against the
-// ruleset, fail on "deny", continue on "allow", and ask the user on "ask".
-// Like the real wiring in src/session/tools.ts, a denial or rejection ends the
-// tool call (Effect.orDie). `userAllows` decides what the simulated user clicks.
+// fake version of the session's permission check. it works like Permission.ask
+// in src/permission/index.ts: deny fails, allow keeps going, ask asks the user.
+// like the real one in src/session/tools.ts, a deny or a "no" from the user ends
+// the tool call (Effect.orDie). userAllows is what the fake user clicks
 const permissionCtx = (ruleset: PermissionV1.Ruleset, userAllows: boolean, session?: string) => {
   const prompts: AskRequest[] = []
   const ctx: Tool.Context = {
@@ -94,8 +93,8 @@ const put = Effect.fn("ReadProperty.put")(function* (p: string, content: string)
   yield* fs.writeWithDirs(p, content)
 })
 
-// fast-check runs its async callback as a plain Promise, so capture the test's
-// Effect context once and run each generated case inside it.
+// fast-check calls its callback as a normal promise, so grab the test's effect
+// context once and run each generated case inside it
 const forAll = <Ts extends [unknown, ...unknown[]], R>(
   arbs: { [K in keyof Ts]: fc.Arbitrary<Ts[K]> },
   check: (...values: Ts) => Effect.Effect<void, unknown, R>,
@@ -114,7 +113,7 @@ const forAll = <Ts extends [unknown, ...unknown[]], R>(
     )
   })
 
-// Pull out just the file-content section: the numbered lines and the footer.
+// only keep the file content part of the output (numbered lines + footer)
 const contentOf = (output: string) => {
   const start = output.indexOf("<content>\n")
   const end = output.lastIndexOf("\n</content>")
@@ -126,64 +125,56 @@ const numberedLines = (output: string) =>
     .filter((l) => /^\d+: /.test(l))
 const footerOf = (output: string) => contentOf(output).split("\n").at(-1) ?? ""
 
-// ---------------------------------------------------------------------------
-// Generators
-// ---------------------------------------------------------------------------
+// generators
 
-// One line of a file. Interviewees cared about exact spacing (S-4: "the exact
-// lines"), so lines include empty strings, leading/trailing spaces, and tabs,
-// not just letters. "\n" and "\r" are excluded because they end a line.
+// one line of a file. interviewees cared about exact spacing (S-4 "the exact
+// lines") so lines can be empty or have spaces and tabs, not just letters.
+// no \n or \r since those end a line
 const lineChar = fc.constantFrom(..."abcxyz019 _-.:{}\t")
 const line = fc.string({ unit: lineChar, maxLength: 30 })
 
-// A whole file as a list of lines, plus whether the last line ends with "\n".
-// Both endings are common in real code, and the tool must count lines the same
-// way for either.
+// a file is a list of lines plus whether it ends with a newline. real files do
+// both so the tool should count lines the same either way
 const fileLines = fc.array(line, { minLength: 1, maxLength: 30 })
 const render = (lines: string[], trailingNewline: boolean) => lines.join("\n") + (trailingNewline ? "\n" : "")
 
-// The lines a file really has, counted from its text. A zero-byte file has no
-// lines, and a final "\n" ends the last line instead of starting a new one.
-// (Step 3 fix: the first version counted the generated list instead, so a file
-// written from [""] was expected to have one blank line, but it is empty.)
+// the lines a file actually has, counted from its text. an empty file has 0
+// lines and a final \n just ends the last line
+// (step 3 fix: first version counted the generated list instead, so a file made
+// from [""] was expected to have 1 blank line but it's actually empty)
 const linesOf = (text: string) => {
   if (text === "") return []
   const parts = text.split("\n")
   return text.endsWith("\n") ? parts.slice(0, -1) : parts
 }
 
-// Add lines to the end of a file the way an editor would: start a new line
-// only if the file has content that does not already end in "\n", and end
-// every added line with "\n" so even a blank added line really exists.
+// append lines like an editor would: add a newline first only if the file has
+// text that doesn't already end in one, and end every new line with \n so even
+// a blank new line actually counts
 const appendLines = (text: string, added: string[]) =>
   (text === "" || text.endsWith("\n") ? text : text + "\n") + added.map((l) => l + "\n").join("")
 
-// File names a user would actually want protected (C-2: privacy, O-2: SSN and
-// ID files), nested at various depths, so rules are tested against real paths
-// and not only a single file at the project root.
+// file names someone would want protected (C-2 privacy, O-2 SSN/ID files), in
+// a few different folders so rules get tested on real paths, not just the root
 const folder = fc.constantFrom("", "config/", "secrets/", "src/app/")
 const secretName = fc.constantFrom("secrets.txt", "id_card.pdf.txt", "ssn.txt", "private.key", "photo-notes.md")
 
-// .env-style names. "*.env" and "*.env.*" must ask, ".env.example" must not.
-// These are exactly the boundaries of the default rules in src/agent/agent.ts.
+// .env style names. *.env and *.env.* should ask, .env.example shouldn't.
+// these match the default rules in src/agent/agent.ts
 const envName = fc.constantFrom(".env", "prod.env", ".env.local", ".env.production", "app.env.test")
 const envExampleName = fc.constantFrom(".env.example", "app.env.example")
 
-// A marker that cannot appear by accident, so "returns none of its contents"
-// can be checked by searching for it.
+// a marker that can't show up by accident, so searching for it tells us if
+// any of the file leaked
 const marker = fc.stringMatching(/^[A-Z]{6}[0-9]{4}$/).map((s) => `TOKEN_${s}`)
 
-// ---------------------------------------------------------------------------
-// Properties
-// ---------------------------------------------------------------------------
+// properties
 
 describe("read tool properties (traceability/wliu4.md)", () => {
-  // R1: If the user's read permission rules deny a file, the read tool refuses
-  // to read it and returns none of its contents, even when the user asks for
-  // that file by name. The decision depends only on the rules and the file's
-  // path, so checking the same rules again, as a new session does, always
-  // gives the same denial.
-  // Kind: invariant
+  // R1: if the user's read rules deny a file, the read tool refuses it and
+  // returns none of its contents. the decision only depends on the rules and the
+  // file path, so a new session with the same rules denies it too.
+  // kind: invariant
   it.live("R1: a denied file is always refused and none of its contents leak", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped({ git: true })
@@ -199,11 +190,11 @@ describe("read tool properties (traceability/wliu4.md)", () => {
           Effect.gen(function* () {
             const rel = dirPart + name
             yield* put(path.join(dir, rel), `first line\n${secret}\nlast line`)
-            // The user's rule is either the exact path or a glob over the extension.
+            // the user's rule is either the exact path or a glob like *.txt
             const pattern = useGlob ? `*${path.extname(name)}` : rel
             const ruleset = Permission.merge(agent.permission, Permission.fromConfig({ read: { [pattern]: "deny" } }))
 
-            // Two separate sessions with the same rules: both must refuse.
+            // two separate sessions with the same rules, both have to refuse
             for (const session of ["ses_first", "ses_reopened"]) {
               const { ctx } = permissionCtx(ruleset, true, session)
               const exit = yield* readExit(dir, { filePath: path.join(dir, rel) }, ctx)
@@ -220,9 +211,9 @@ describe("read tool properties (traceability/wliu4.md)", () => {
     }),
   )
 
-  // R2: By default, reading a .env file stops and asks the user first, and the
-  // file's contents are returned only if the user approves.
-  // Kind: invariant
+  // R2: by default, reading a .env file asks the user first, and the contents
+  // are only returned if the user approves.
+  // kind: invariant
   it.live("R2: with default rules, .env files ask first and only return contents if approved", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped({ git: true })
@@ -241,7 +232,7 @@ describe("read tool properties (traceability/wliu4.md)", () => {
             const { ctx, prompts } = permissionCtx(agent.permission, userAllows)
             const exit = yield* readExit(dir, { filePath: path.join(dir, rel) }, ctx)
 
-            // The user is always asked, exactly once, for this file.
+            // user gets asked exactly once for this file
             expect(prompts).toHaveLength(1)
             expect(prompts[0].permission).toBe("read")
             expect(prompts[0].patterns).toEqual([rel])
@@ -257,7 +248,7 @@ describe("read tool properties (traceability/wliu4.md)", () => {
         { numRuns: 40 },
       )
 
-      // The .env.example exception: no prompt, contents returned.
+      // the .env.example exception: no prompt and the contents come back
       yield* forAll(
         [folder, envExampleName, marker],
         (dirPart, name, secret) =>
@@ -274,15 +265,14 @@ describe("read tool properties (traceability/wliu4.md)", () => {
     }),
   )
 
-  // R3: If a file is changed and then restored to its exact original contents,
-  // reading it again shows file content identical to the first read: the same
-  // numbered lines and the same end-of-file footer.
-  // Kind: round-trip
+  // R3: if a file is changed and then restored, reading it again shows the same
+  // file content as the first read (same numbered lines and footer).
+  // kind: round-trip
   it.live("R3: change a file, restore it, and the read content is identical", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped({ git: true })
-      // A nested AGENTS.md makes the tool attach instructions on the first read
-      // only. That is why R3 compares the content section, not the full output.
+      // a nested AGENTS.md gets attached on the first read only, which is why R3
+      // compares just the content part and not the whole output
       yield* put(path.join(dir, "notes", "AGENTS.md"), "Project notes instructions.")
       yield* forAll([fileLines, fc.boolean(), fc.nat(), line], (lines, trailing, editAt, replacement) =>
         Effect.gen(function* () {
@@ -301,15 +291,14 @@ describe("read tool properties (traceability/wliu4.md)", () => {
     }),
   )
 
-  // R4: Adding lines to the end of a file does not change the numbered lines
-  // that were already shown. The only differences are the new lines and the
-  // line total.
-  // Kind: metamorphic
+  // R4: adding lines to the end of a file doesn't change the lines already
+  // shown. only the new lines and the total change.
+  // kind: metamorphic
   it.live("R4: appending lines keeps earlier numbered lines and grows the total", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped()
-      // Small files keep every case under the 2000-line default, so the only
-      // thing that changes between reads is the append itself.
+      // small files so every case stays under the 2000 line default and the only
+      // thing that changes between reads is the append
       yield* forAll(
         [fileLines, fc.array(line, { minLength: 1, maxLength: 10 }), fc.boolean()],
         (lines, added, trailing) =>
@@ -324,9 +313,9 @@ describe("read tool properties (traceability/wliu4.md)", () => {
             const before = numberedLines(a.output)
             const after = numberedLines(b.output)
             expect(before).toHaveLength(linesOf(original).length)
-            // The lines already shown are unchanged...
+            // lines already shown stay the same...
             expect(after.slice(0, before.length)).toEqual(before)
-            // ...and the only new lines are the added ones, numbered after them.
+            // ...and the only new lines are the added ones, numbered right after
             expect(after.slice(before.length)).toEqual(added.map((text, i) => `${before.length + i + 1}: ${text}`))
             expect(footerOf(a.output)).toBe(`(End of file - total ${before.length} lines)`)
             expect(footerOf(b.output)).toBe(`(End of file - total ${before.length + added.length} lines)`)
@@ -335,14 +324,14 @@ describe("read tool properties (traceability/wliu4.md)", () => {
     }),
   )
 
-  // R5: When a file is too long to show in one read, the output says which
-  // lines were shown and how to get the rest. It never stops without saying so.
-  // Kind: invariant
+  // R5: when a file is too long to show at once, the output says which lines
+  // were shown and how to get the rest.
+  // kind: invariant
   it.live("R5: a cut-off read always says which lines it showed and where to continue", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped()
-      // Small limits stand in for the 2000-line default so each case stays fast.
-      // The offset can land anywhere, including the last line.
+      // small limits stand in for the 2000 line default so it runs fast. offset
+      // can land anywhere including the last line
       const caseArb = fc
         .record({ total: fc.integer({ min: 1, max: 60 }), limit: fc.integer({ min: 1, max: 60 }) })
         .chain(({ total, limit }) =>
@@ -367,7 +356,7 @@ describe("read tool properties (traceability/wliu4.md)", () => {
         }),
       )
 
-      // Files big enough to hit the 50 KB byte cap before the line limit.
+      // files big enough to hit the 50 KB cap before the line limit
       yield* forAll(
         [fc.integer({ min: 40, max: 120 }), fc.integer({ min: 800, max: 1900 })],
         (rows, width) =>
@@ -389,20 +378,18 @@ describe("read tool properties (traceability/wliu4.md)", () => {
     }),
   )
 
-  // R6 (revised in P4): Every line the read tool shows starts with its line
-  // number in the original file, so the user can check the output against the
-  // file. A line longer than 2000 characters is shown as its first 2000
-  // characters followed by "... (line truncated to 2000 chars)".
-  // Kind: model / oracle
+  // R6 (changed in p4): every line shown starts with its line number in the
+  // file. a line over 2000 characters shows its first 2000 characters plus
+  // "... (line truncated to 2000 chars)".
+  // kind: model / oracle
   it.live("R6: every shown line matches the file at the line number it claims", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped()
-      // The oracle is the simplest possible reader: take the file's real lines
-      // (linesOf) and number them. Offsets and limits are generated within the
-      // file so every slice, including a single line at the end, gets checked.
-      // About 1 in 10 lines sits near the tool's 2000-character line limit
-      // (1990 to 2100 chars), since that boundary is where output and file
-      // could disagree.
+      // the oracle is the simplest reader possible: split the file into its real
+      // lines (linesOf) and number them. offset and limit stay inside the file so
+      // every slice gets checked, even one line at the end. about 1 in 10 lines
+      // is near the 2000 character limit (1990 to 2100) since that's where the
+      // output and the file could disagree
       const mixedLine = fc.oneof(
         { weight: 9, arbitrary: line },
         { weight: 1, arbitrary: fc.integer({ min: 1990, max: 2100 }).map((n) => "w".repeat(n)) },
@@ -422,8 +409,8 @@ describe("read tool properties (traceability/wliu4.md)", () => {
           const file = path.join(dir, "check.txt")
           yield* put(file, text)
           const result = yield* read(dir, { filePath: file, offset, limit })
-          // Step 3: the first version expected long lines in full. The tool cuts
-          // them on purpose, so R6 was revised and the oracle now does the same.
+          // step 3: first version expected long lines in full, but the tool cuts
+          // them on purpose so R6 was changed and the oracle cuts them too
           const shown = (t: string) => (t.length > 2000 ? t.slice(0, 2000) + "... (line truncated to 2000 chars)" : t)
           const expected = linesOf(text)
             .slice(offset - 1, offset - 1 + limit)
