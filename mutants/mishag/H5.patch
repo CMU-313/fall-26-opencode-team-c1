@@ -1,0 +1,12 @@
+diff --git a/packages/opencode/src/cli/cmd/stats.ts b/packages/opencode/src/cli/cmd/stats.ts
+--- a/packages/opencode/src/cli/cmd/stats.ts
++++ b/packages/opencode/src/cli/cmd/stats.ts
+@@ -295,7 +295,7 @@ export function aggregateSessionStatsInputs(results: SessionStatsInput[], window
+     latest: latestTime,
+   }
+   stats.days = effectiveDays
+-  stats.activeDays = activeDates.size
++  stats.activeDays = results.flatMap((result) => result.activityTimes).length
+   stats.costPerDay = stats.totalCost / effectiveDays
+   const totalTokens =
+     stats.totalTokens.input +

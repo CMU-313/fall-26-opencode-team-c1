@@ -1,0 +1,12 @@
+diff --git a/packages/opencode/src/cli/cmd/stats.ts b/packages/opencode/src/cli/cmd/stats.ts
+--- a/packages/opencode/src/cli/cmd/stats.ts
++++ b/packages/opencode/src/cli/cmd/stats.ts
+@@ -260,7 +260,7 @@ export function aggregateSessionStatsInputs(results: SessionStatsInput[], window
+     }
+ 
+     stats.totalMessages += result.messageCount
+-    stats.totalCost += result.sessionCost
++    stats.totalCost = result.sessionCost
+     stats.totalTokens.input += result.sessionTokens.input
+     stats.totalTokens.output += result.sessionTokens.output
+     stats.totalTokens.reasoning += result.sessionTokens.reasoning
