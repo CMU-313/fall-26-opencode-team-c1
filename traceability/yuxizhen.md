@@ -1,0 +1,51 @@
+# Traceability: Sissi Zhen (yuxizhen)
+
+**Target feature:** /undo
+
+**Files:** 
+- /packages/opencode/src/session/revert.ts
+- /packages/opencode/src/snapshot/index.ts
+
+
+## Requirements
+
+| ID | Interview evidence | Requirement | Acceptance Criteria | Changed in P4? | Property (kind) | Test |
+|---|---|---|---|---|---|---|
+| R1 | C-11, S-6, O-5: “If they created the file, the file should be deleted.” | When /undo reverts a turn, every file the agent created during that turn is deleted from disk. | Start with a clean git tree. The agent creates src/Helper.java. After /undo, `git status` shows a clean git tree. | Yes | Invariant | `packages/opencode/test/session/undo.property.test.ts:247-323` |
+| R2 | C-7, C-16, C-17, S-11, S-12, S-14, O-1, O-11: “you can just run git status and see that there’s no changes.” | When /undo reverts a turn, every file the agent edited during that turn is restored to its exact content from just before that turn. | Start with a clean git tree and passing tests. The agent edits Main.java and Config.java. After /undo, git status reports a clean working tree, and git diff is empty. | Yes | Round-trip, Invariant (pruned snapshots) | `packages/opencode/test/session/undo.property.test.ts:325-378`, `packages/opencode/test/session/undo.property.test.ts:380-424` |
+| R3 | C-8, C-9, S-4, O-4: “Undo should only erase the agent changes, not my manual changes.” | If the user edits a file the agent modified and the user’s edits don’t overlap the agent’s, /undo reverts only the agent’s changes. | Agent changes lines 10–12 of Foo.java. User edits line 40 by hand. After /undo, lines 10–12 match the pre-turn content and line 40 keeps the user’s edit. | Yes | Model/Oracle | `packages/opencode/test/session/undo.property.test.ts:426-462` |
+| R4 | C-10, S-5, O-4: “if you’re editing the same lines as the agent, that can get a bit confusing… it should be specified.” | If the user’s manual edits overlap lines the agent changed, /undo names the conflicting file and lines in TUI, and asks to overwrite the file or skip it. | The agent changes line 10 of Foo.java, then the user edits line 10. /undo prints a warning that identifies Foo.java:10. If the user chooses “skip,” Foo.java stays byte-identical to its state before the /undo. Other non-conflicting files are still reverted. | Yes | | |
+| R5 | C-13, C-14: “if you, in the next prompt, asked it to act on what it read, it would have no idea.” | `/undo` removes the undone prompt, the agent’s response, and any file contents the agent read during that turn from the conversation context sent to the model in later turns. | Prompt 1 is “read notes.txt,” and the file contains the token ZEBRA42. Run /undo. Send prompt 2. The logged request payload for prompt 2 does not contain ZEBRA42 or the text of prompt 1. | No | Metamorphic | `packages/opencode/test/session/undo.property.test.ts`, "R5: adding then undoing a turn leaves the next request unchanged" |
+| R6 | C-15, S-9, S-10, O-8, O-9: “there should be some ‘undone’ indicator; [writes] should give you… a path to the file that was edited.” | After every /undo, the TUI prints a “Reverted” confirmation. The confirmation lists affected file path and whether it was restored/deleted, or says no files changed. | Undoing a read-only turn and undoing a question-and-answer turn both print Reverted (0 files changed). Undoing a turn that created a.txt and modified b.txt prints the same header followed by deleted a.txt & restored b.txt. | Yes | | |
+
+
+
+Properties written or suggested by opencode or another AI tool: R1, R2, R3, R5 (all written by Claude Code)
+
+## Requirement changes
+
+| ID | Original requirement (P3) | Revised requirement | Why it changed |
+|---|---|---|---|
+| R1 | When /undo reverts a turn, every file the agent created during that turn is deleted from disk. | When /undo reverts a turn, it deletes each file the agent created that snapshots cover (git project with snapshots on, inside the worktree, not gitignored, at most 2 MiB) and that hasn't changed since the turn ended, sending changed files to R4 and reporting uncovered files under R6. | Undo can only delete what snapshots recorded, and deleting every created file conflicts with R3 when the user has since edited one, so this removes agent-created files as C-11, S-6 and O-5 wanted without losing user work. |
+| R2 | When /undo reverts a turn, every file the agent edited during that turn is restored to its exact content from just before that turn. | When /undo reverts a turn, each snapshot-covered file (see R1) that the agent edited or deleted and that hasn't changed since the turn ended returns to its exact pre-turn content, unless its snapshot was pruned after about 7 days (then it's left untouched and reported under R6), and only the working tree changes, not the git index, HEAD, or commits. | Exact restores would erase the manual edits R3 must keep, and snapshots have R1's coverage limits, get pruned, and can't undo staging or commits, so `git status` proves the agent's work is gone only if the agent didn't stage or commit. |
+| R3 | If the user edits a file the agent modified and the user’s edits don’t overlap the agent’s, /undo reverts only the agent’s changes. | If, after the turn ended, the user edits a text file the agent modified and those edits neither touch nor directly adjoin any line the agent changed, /undo reverts only the agent's changes and keeps the user's edits exactly, while changes made during the turn count as the agent's. | Snapshots can't trace a change made during a turn to the agent or the user, and "don't overlap" didn't say whether neighboring lines count, so adjacent lines now conflict as they do in `git merge-file`, while the need to keep manual edits stays the same. |
+| R4 | If the user’s manual edits overlap lines the agent changed, /undo names the conflicting file and lines in TUI, and asks to overwrite the file or skip it. | If the user's post-turn edits touch or directly adjoin lines the agent changed, or the file can't be merged by line (binary, created by the agent then edited, or deleted by the agent then recreated), /undo names the file and any conflicting on-disk lines in the TUI and asks to overwrite (return it to its pre-turn state, discarding the user's edits) or skip (leave it byte-identical, which is also the result of dismissing the prompt or using a client that can't prompt), while other files are still reverted. | "Overwrite" had no defined result, dismissing the prompt wasn't covered, some files have no lines to name, and SDK clients have no TUI prompt, so anything unanswered now skips, which keeps the conflict "specified" rather than decided for the user as C-10, S-5 and O-4 wanted. |
+| R5 | `/undo` removes the undone prompt, the agent’s response, and any file contents the agent read during that turn from the conversation context sent to the model in later turns. | Unchanged. | Kept as is because undone messages are deleted before the next prompt, the requirement covers only later requests, the test LLM server can check the payloads, and /redo only works before those messages are deleted. |
+| R6 | After every /undo, the TUI prints a “Reverted” confirmation. The confirmation lists affected file path and whether it was restored/deleted, or says no files changed. | After every /undo, the TUI shows `Reverted (N files changed)` with each affected path marked deleted, restored, kept your edits, skipped, or not reverted (uncovered files only if changed by the edit, write, or apply_patch tools), or it says that files weren't reverted because the project has no snapshots, or that there was nothing to undo. | Nothing records a shell command's change to an uncovered file, "restored/deleted" has no word for merged or skipped files, "no files changed" would be false without snapshots, and "every /undo" missed the nothing-to-undo case, so the new outcomes keep the clear indicator and file paths that C-15, S-9 and O-8 wanted. |
+
+## Known flaky test in CI
+
+The `test` workflow's unit job failed at `dcdec01` ([run 41577381600](https://github.com/CMU-313/fall-26-opencode-team-c1/actions/runs/41577381600)) on one test that this branch doesn't cover: `headerTimeout does not abort delayed SSE body after headers arrive` in `packages/opencode/test/provider/header-timeout.test.ts`. It expected `"late"` and received `""`. The other tests in that run passed or were skipped as usual (3321 pass, 21 skip, 1 todo, 1 fail), including the /undo properties.
+
+**Likely cause:** a timing race in the header timeout, in the provider fetch wrapper in `packages/opencode/src/provider/provider.ts`. If the JS thread is blocked when the headers arrive, the timer can fire before the code that cancels it runs. The abort then cuts off the response body, and the stream can finish normally with empty text and no error.
+
+**Evidence:**
+- This branch doesn't change `packages/opencode/src/provider` or `packages/opencode/test/provider`.
+- The test and the full `opencode` suite pass in the devcontainer at `dcdec01`.
+- A temporary test that blocked the JS thread for 800 ms right after the server flushed its headers, with the test's 500 ms timeout, returned the same `""` with no error in 2 of 3 runs. The third run rejected with `ProviderHeaderTimeoutError`. The same stall returned `"late"` with the timeout off, and a 300 ms stall also returned `"late"`.
+
+The stall was forced, so this shows a way to get the CI symptom, not that the CI run failed this way.
+
+**Other CI instability:** at `3606911`, the push run's `Run unit tests` step hit its 10-minute limit while the pull request run passed. At `380419e`, the push run passed while the pull request run failed with exit code 1. The failing test in that second run wasn't identified. The /undo property step passed in all four runs.
+
+**Status:** the test is unchanged on this branch because it doesn't check an /undo requirement, so it can still fail this way in CI. The `Run unit tests` limit went from 10 to 15 minutes. The race itself is still in `provider.ts` because it's outside the /undo work. A possible follow-up is raising `HeaderTimeoutError` when the timeout fired before `fetch` returned.
