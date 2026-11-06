@@ -1,5 +1,7 @@
+import { assert, configureGlobal, integer, property } from "fast-check"
+configureGlobal({ seed: 42 })
+
 import { expect, it } from "bun:test"
-import { assert, integer, property } from "fast-check"
 import { aggregateSessionStatsInputs, rankModels } from "../../src/cli/cmd/stats"
 import type { SessionStats, SessionStatsInput } from "../../src/cli/cmd/stats"
 import {
