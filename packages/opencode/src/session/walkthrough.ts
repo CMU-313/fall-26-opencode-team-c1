@@ -9,7 +9,7 @@ import { EffectBridge } from "@/effect/bridge"
 import { Question } from "@/question"
 import type { MessageID, SessionID } from "./schema"
 
-const edits = ["edit", "write", "apply_patch"]
+const edits = ["edit", "write", "apply_patch", "bash"]
 const properties = {
   walkthrough: {
     type: "array",
