@@ -6,7 +6,7 @@ import { Effect, Option, Schema, Semaphore } from "effect"
 import { QuestionV2 } from "../../question"
 import type { ToolRegistry } from "../../tool/registry"
 
-const edits = new Set(["edit", "write", "apply_patch"])
+const edits = new Set(["edit", "write", "apply_patch", "bash"])
 const line = Schema.String.check(Schema.isPattern(/^[^\r\n]*\S[^\r\n]*$/))
 export const Input = Schema.Struct({
   walkthrough: Schema.Array(Schema.Struct({ path: line, explanation: line })),

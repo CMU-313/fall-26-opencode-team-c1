@@ -40,7 +40,7 @@ cd ../opencode && bun test src/prompt-scope/classifier.test.ts src/prompt-scope/
 
 ## Codebase Walkthrough Before First Edit
 
-When enabled, the build agent pauses before its first edit in each request, lists every file it read with one line on what the file does and why it matters to the change, and waits for you to continue, cancel, or ask a question. It is off by default.
+When enabled, the build agent pauses before its first edit or shell command in each request, lists every file it read with one line on what the file does and why it matters to the change, and waits for you to continue, cancel, or ask a question. It is off by default.
 
 ### How to Use and Manually Test
 
