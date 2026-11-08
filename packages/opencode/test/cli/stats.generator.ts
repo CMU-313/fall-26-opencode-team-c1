@@ -1,4 +1,4 @@
-import { array, constantFrom, integer, oneof, record, tuple, type Arbitrary } from "fast-check"
+import { array, constantFrom, integer, oneof, option, record, tuple, type Arbitrary } from "fast-check"
 import type { SessionStats, SessionStatsInput } from "../../src/cli/cmd/stats"
 
 // Generates counts biased toward zero, top-3/top-5 boundaries, ties, and a large maximum.
@@ -21,23 +21,27 @@ const tokenUsageArbitrary = record({
   }),
 })
 
-// Generates 5–20 distinct models with likely ranking ties and boundary usage values.
-export const modelUsageArbitrary: Arbitrary<SessionStats["modelUsage"]> = array(
-  record({
-    messages: countArbitrary,
-    tokens: record({
-      input: tokenArbitrary,
-      output: tokenArbitrary,
-      cache: record({
-        read: tokenArbitrary,
-        write: tokenArbitrary,
-      }),
+const modelStatsArbitrary = record({
+  messages: countArbitrary,
+  tokens: record({
+    input: tokenArbitrary,
+    output: tokenArbitrary,
+    cache: record({
+      read: tokenArbitrary,
+      write: tokenArbitrary,
     }),
-    costInCents: costInCentsArbitrary,
   }),
-  { minLength: 5, maxLength: 20 },
-).map((models) =>
-  Object.fromEntries(
+  costInCents: costInCentsArbitrary,
+})
+
+function modelUsage(
+  models: Array<{
+    messages: number
+    tokens: { input: number; output: number; cache: { read: number; write: number } }
+    costInCents: number
+  }>,
+) {
+  return Object.fromEntries(
     models.map((model, index) => [
       `provider-${index}/model-${index}`,
       {
@@ -46,8 +50,19 @@ export const modelUsageArbitrary: Arbitrary<SessionStats["modelUsage"]> = array(
         cost: model.costInCents / 100,
       },
     ]),
-  ),
-)
+  )
+}
+
+// Generates 5–20 distinct models with likely ranking ties and boundary usage values.
+export const modelUsageArbitrary: Arbitrary<SessionStats["modelUsage"]> = array(modelStatsArbitrary, {
+  minLength: 5,
+  maxLength: 20,
+}).map(modelUsage)
+
+// Generates zero to five models for aggregation within an individual session.
+const sessionModelUsageArbitrary: Arbitrary<SessionStats["modelUsage"]> = array(modelStatsArbitrary, {
+  maxLength: 5,
+}).map(modelUsage)
 
 // Generates one summarized session with usage totals and day-aligned activity timestamps.
 const sessionStatsInputArbitrary: Arbitrary<SessionStatsInput> = tuple(
@@ -63,7 +78,8 @@ const sessionStatsInputArbitrary: Arbitrary<SessionStatsInput> = tuple(
     ),
     oneof(constantFrom(0, 86_400_000, 864_000_000), integer({ min: 0, max: 31_536_000_000 })),
   ),
-).map(([session, timestamps]) => ({
+  sessionModelUsageArbitrary,
+).map(([session, timestamps, sessionModelUsage]) => ({
   messageCount: session.messageCount,
   sessionCost: session.costInCents / 100,
   sessionTokens: session.sessionTokens,
@@ -74,7 +90,7 @@ const sessionStatsInputArbitrary: Arbitrary<SessionStatsInput> = tuple(
     session.sessionTokens.cache.read +
     session.sessionTokens.cache.write,
   sessionToolUsage: {},
-  sessionModelUsage: {},
+  sessionModelUsage,
   activityTimes: [timestamps[0]],
   earliestTime: timestamps[0],
   latestTime: timestamps[0] + timestamps[1],
@@ -87,4 +103,9 @@ export const sessionStatsInputsArbitrary = array(sessionStatsInputArbitrary, { m
 export const nonEmptySessionStatsInputsArbitrary = array(sessionStatsInputArbitrary, {
   minLength: 1,
   maxLength: 50,
+})
+
+// Generates no window or a bounded window, biased toward today and one-day boundaries.
+export const windowDaysArbitrary = option(oneof(constantFrom(0, 1, 10, 365), integer({ min: 0, max: 365 })), {
+  nil: undefined,
 })

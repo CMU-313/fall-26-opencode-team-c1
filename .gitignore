@@ -8,3 +8,5 @@ coverage-html
 packages/sdk/js/tsconfig.tsbuildinfo
 test-results/.last-run.json
 .devcontainer
+.stryker-tmp/
+reports/

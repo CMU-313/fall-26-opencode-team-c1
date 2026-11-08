@@ -3,10 +3,7 @@
   "commandRunner": {
     "command": "bun test test/cli/stats.test.ts"
   },
-  "mutate": [
-    "src/cli/cmd/stats.ts:220-317",
-    "src/cli/cmd/stats.ts:319-327"
-  ],
+  "mutate": ["src/cli/cmd/stats.ts:220-268", "src/cli/cmd/stats.ts:274-316", "src/cli/cmd/stats.ts:319-326"],
   "coverageAnalysis": "off",
   "reporters": ["html", "clear-text", "progress"]
 }
