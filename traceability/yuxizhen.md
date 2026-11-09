@@ -34,18 +34,10 @@ Properties written or suggested by opencode or another AI tool: R1, R2, R3, R5 (
 | R6 | After every /undo, the TUI prints a “Reverted” confirmation. The confirmation lists affected file path and whether it was restored/deleted, or says no files changed. | After every /undo, the TUI shows `Reverted (N files changed)` with each affected path marked deleted, restored, kept your edits, skipped, or not reverted (uncovered files only if changed by the edit, write, or apply_patch tools), or it says that files weren't reverted because the project has no snapshots, or that there was nothing to undo. | Nothing records a shell command's change to an uncovered file, "restored/deleted" has no word for merged or skipped files, "no files changed" would be false without snapshots, and "every /undo" missed the nothing-to-undo case, so the new outcomes keep the clear indicator and file paths that C-15, S-9 and O-8 wanted. |
 
 ## Known flaky test in CI
+CI tests times out for unit tests. Since this is not the main focus of the current projects, I increased the timeout limit to 15 minutes.
 
-The `test` workflow's unit job failed at `dcdec01` ([run 41577381600](https://github.com/CMU-313/fall-26-opencode-team-c1/actions/runs/41577381600)) on one test that this branch doesn't cover: `headerTimeout does not abort delayed SSE body after headers arrive` in `packages/opencode/test/provider/header-timeout.test.ts`. It expected `"late"` and received `""`. The other tests in that run passed or were skipped as usual (3321 pass, 21 skip, 1 todo, 1 fail), including the /undo properties.
-
-**Likely cause:** a timing race in the header timeout, in the provider fetch wrapper in `packages/opencode/src/provider/provider.ts`. If the JS thread is blocked when the headers arrive, the timer can fire before the code that cancels it runs. The abort then cuts off the response body, and the stream can finish normally with empty text and no error.
-
-**Evidence:**
-- This branch doesn't change `packages/opencode/src/provider` or `packages/opencode/test/provider`.
-- The test and the full `opencode` suite pass in the devcontainer at `dcdec01`.
-- A temporary test that blocked the JS thread for 800 ms right after the server flushed its headers, with the test's 500 ms timeout, returned the same `""` with no error in 2 of 3 runs. The third run rejected with `ProviderHeaderTimeoutError`. The same stall returned `"late"` with the timeout off, and a 300 ms stall also returned `"late"`.
-
-The stall was forced, so this shows a way to get the CI symptom, not that the CI run failed this way.
-
-**Other CI instability:** at `3606911`, the push run's `Run unit tests` step hit its 10-minute limit while the pull request run passed. At `380419e`, the push run passed while the pull request run failed with exit code 1. The failing test in that second run wasn't identified. The /undo property step passed in all four runs.
-
-**Status:** the test is unchanged on this branch because it doesn't check an /undo requirement, so it can still fail this way in CI. The `Run unit tests` limit went from 10 to 15 minutes. The race itself is still in `provider.ts` because it's outside the /undo work. A possible follow-up is raising `HeaderTimeoutError` when the timeout fired before `fetch` returned.
+## Hand-written mutants
+| ID | Requirement targeted | Change | Predicted killer | Actual result |
+|---|---|---|---|---|
+| H1 | R1 | `snapshot/index.ts`: remove(op.file) line deleted, so a file created in the previous run would remain after /undo | "Agent created files from the last turn are deleted from disk" (R1) | |
+| H2 | R2 | `snapshot/index.ts`: change `?? true` to `?? false` in isEdited, so a file git can't read is not counted as edited, leading to downstream revert path instead of `removeAgentChanges`. | "Files agent edited that hasn't changed is restored to its content before the turn." (R2) | |
