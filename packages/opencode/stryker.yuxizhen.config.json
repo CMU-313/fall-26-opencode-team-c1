@@ -31,5 +31,7 @@
     "src/snapshot/index.ts:857-888"
   ],
   "coverageAnalysis": "off",
-  "reporters": ["html", "clear-text", "progress"]
+  "reporters": ["html", "clear-text", "progress"],
+  "concurrency": 2,
+  "timeoutMS": 200000
 }
