@@ -1,8 +1,8 @@
 import { assert, configureGlobal, integer, property } from "fast-check"
 configureGlobal({ seed: 42 })
 
-import { expect, it } from "bun:test"
-import { aggregateSessionStatsInputs, rankModels } from "../../src/cli/cmd/stats"
+import { expect, it, spyOn } from "bun:test"
+import { aggregateSessionStatsInputs, displayStats, rankModels } from "../../src/cli/cmd/stats"
 import type { SessionStats, SessionStatsInput } from "../../src/cli/cmd/stats"
 import {
   modelUsageArbitrary,
@@ -122,6 +122,23 @@ function displayedAggregateFields(stats: SessionStats) {
   }
 }
 
+function displayedTotalCost(stats: SessionStats, modelLimit: number) {
+  const output: string[] = []
+  const log = spyOn(console, "log").mockImplementation((...values) => {
+    output.push(values.map(String).join(" "))
+  })
+  const write = spyOn(process.stdout, "write").mockImplementation(() => true)
+
+  try {
+    displayStats(stats, undefined, modelLimit)
+  } finally {
+    log.mockRestore()
+    write.mockRestore()
+  }
+
+  return output.find((line) => line.includes("Total Cost"))
+}
+
 // R2 — Increasing the number of displayed models must preserve the existing ranking and stats of previously displayed models.
 it("aggregated model statistics agree with a sequential reference implementation", () => {
   console.log("PBT R2: aggregated model statistics match the reference oracle")
@@ -164,7 +181,9 @@ it("model limits leave all overview, cost, and token fields unchanged", () => {
       integer({ min: 0, max: 20 }),
       (inputs, modelUsage, windowDays, firstLimit, secondLimit) => {
         const stats = aggregateSessionStatsInputs(inputs, windowDays)
-        stats.modelUsage = modelUsage
+        stats.modelUsage = Object.fromEntries(
+          Object.entries(modelUsage).map(([model, usage]) => [model, { ...usage, cost: usage.cost + 0.01 }]),
+        )
         const expected = aggregateReference(inputs, windowDays)
         const firstReport = {
           aggregate: displayedAggregateFields(stats),
@@ -176,6 +195,7 @@ it("model limits leave all overview, cost, and token fields unchanged", () => {
         }
         expect(firstReport.aggregate).toEqual(displayedAggregateFields({ ...stats, ...expected }))
         expect(secondReport.aggregate).toEqual(displayedAggregateFields({ ...stats, ...expected }))
+        expect(displayedTotalCost(stats, 3)).toBe(displayedTotalCost(stats, 5))
       },
     ),
   )

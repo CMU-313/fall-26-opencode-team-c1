@@ -1,0 +1,7 @@
+diff --git a/packages/opencode/src/cli/cmd/stats.ts b/packages/opencode/src/cli/cmd/stats.ts
+--- a/packages/opencode/src/cli/cmd/stats.ts
++++ b/packages/opencode/src/cli/cmd/stats.ts
+@@ -352,2 +352,2 @@
+-  const cost = isNaN(stats.totalCost) ? 0 : stats.totalCost
++  const cost = isNaN(stats.totalCost) ? 0 : modelLimit === undefined ? stats.totalCost : rankModels(stats.modelUsage, modelLimit).reduce((total, [, usage]) => total + usage.cost, 0)
+   const costPerDay = isNaN(stats.costPerDay) ? 0 : stats.costPerDay

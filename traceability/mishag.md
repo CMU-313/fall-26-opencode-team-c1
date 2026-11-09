@@ -78,3 +78,68 @@ The property was too weak because the property only checked consistency between 
 
 The strengthened version, and evidence that it kills the mutant:   
 The strengthened version used an oracle, so the faulty implementation wasn't being compared against another faulty implementation, but a correct one. This allowed it to not only check for consistent, but also check that the models being returned were correct models. Evidence that the mutant was killed is that the score improved from 24.00% to 94.67% with the only surviving mutants having been proved to be equivalent mutants.   
+
+## Red team
+Mutants were send by Anna David (annadavi) and are located at mutants/mishag/redteam/defend.  
+
+### Mutant 1:
+diff --git a/packages/opencode/src/cli/cmd/stats.ts b/packages/opencode/src/cli/cmd/stats.ts
+--- a/packages/opencode/src/cli/cmd/stats.ts
++++ b/packages/opencode/src/cli/cmd/stats.ts
+@@ -320,5 +320,5 @@
+```diff
+   const sortedModels = Object.entries(modelUsage).sort(([modelA, usageA], [modelB, usageB]) => {
+-    const messages = usageB.messages - usageA.messages
+-    if (messages !== 0) return messages
++    const cost = usageB.cost - usageA.cost
++    if (cost !== 0) return cost
+     return modelA.localeCompare(modelB)
+   })
+```
+Result: This mutant was killed. 
+
+Fix: N/A because the mutant was killed. 
+
+### Mutant 2:   
+diff --git a/packages/opencode/src/cli/cmd/stats.ts b/packages/opencode/src/cli/cmd/stats.ts
+--- a/packages/opencode/src/cli/cmd/stats.ts
++++ b/packages/opencode/src/cli/cmd/stats.ts
+@@ -352,3 +352,3 @@
+```diff
+-  const cost = isNaN(stats.totalCost) ? 0 : stats.totalCost
++  const cost = isNaN(stats.totalCost) ? 0 : modelLimit === undefined ? stats.totalCost : rankModels(stats.modelUsage, modelLimit).reduce((total, [, usage]) => total + usage.cost, 0)
+   const costPerDay = isNaN(stats.costPerDay) ? 0 : stats.costPerDay
+-  const cost = isNaN(stats.totalCost) ? 0 : stats.totalCost
++  const cost = isNaN(stats.totalCost) ? 0 : modelLimit === undefined ? stats.totalCost : rankModels(stats.modelUsage, modelLimit).reduce((total, [, usage]) => total + usage.cost, 0)
+```
+
+This patch did not apply because the second "const cost = isNaN(stats.totalCost) ? 0 : stats.totalCost" line was not in my source code, so I changed the patch to the following to get it to apply:
+diff --git a/packages/opencode/src/cli/cmd/stats.ts b/packages/opencode/src/cli/cmd/stats.ts
+--- a/packages/opencode/src/cli/cmd/stats.ts
++++ b/packages/opencode/src/cli/cmd/stats.ts
+@@ -352,2 +352,2 @@
+```diff
+-  const cost = isNaN(stats.totalCost) ? 0 : stats.totalCost
++  const cost = isNaN(stats.totalCost) ? 0 : modelLimit === undefined ? stats.totalCost : rankModels(stats.modelUsage, modelLimit).reduce((total, [, usage]) => total + usage.cost, 0)
+   const costPerDay = isNaN(stats.costPerDay) ? 0 : stats.costPerDay
+```
+
+Result: This mutant survived. 
+
+Fix: The property for R3 now runs displayStats() and compares displayed total cost under model limits 3 and 5, killing this mutant. 
+
+### Mutant 3: 
+diff --git a/packages/opencode/src/cli/cmd/stats.ts b/packages/opencode/src/cli/cmd/stats.ts
+--- a/packages/opencode/src/cli/cmd/stats.ts
++++ b/packages/opencode/src/cli/cmd/stats.ts
+@@ -262,3 +262,3 @@
+```diff
+     stats.totalMessages += result.messageCount
+-    stats.totalCost += result.sessionCost
++    stats.totalCost += Math.round(result.sessionCost * 100) / 100
+     stats.totalTokens.input += result.sessionTokens.input
+```
+
+Result: This mutant survived. 
+
+Fix: The generator now also generates factional cents, killing this mutant. 

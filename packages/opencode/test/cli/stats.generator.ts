@@ -10,6 +10,12 @@ const tokenArbitrary = oneof(constantFrom(0, 1, 1_000_000), integer({ min: 0, ma
 // Generates exact cent values biased toward zero, the interview examples, and the maximum.
 const costInCentsArbitrary = oneof(constantFrom(0, 1, 3, 8, 1_000_000), integer({ min: 0, max: 1_000_000 }))
 
+// Generates session costs in whole cents and fractional-cent boundary values that must not be rounded during aggregation.
+const sessionCostArbitrary = oneof(
+  costInCentsArbitrary.map((cost) => cost / 100),
+  constantFrom(0.001, 0.005, 0.015, 12.345),
+)
+
 // Generates input, output, reasoning, and cache token usage independently.
 const tokenUsageArbitrary = record({
   input: tokenArbitrary,
@@ -68,7 +74,7 @@ const sessionModelUsageArbitrary: Arbitrary<SessionStats["modelUsage"]> = array(
 const sessionStatsInputArbitrary: Arbitrary<SessionStatsInput> = tuple(
   record({
     messageCount: countArbitrary,
-    costInCents: costInCentsArbitrary,
+    sessionCost: sessionCostArbitrary,
     sessionTokens: tokenUsageArbitrary,
   }),
   tuple(
@@ -81,7 +87,7 @@ const sessionStatsInputArbitrary: Arbitrary<SessionStatsInput> = tuple(
   sessionModelUsageArbitrary,
 ).map(([session, timestamps, sessionModelUsage]) => ({
   messageCount: session.messageCount,
-  sessionCost: session.costInCents / 100,
+  sessionCost: session.sessionCost,
   sessionTokens: session.sessionTokens,
   sessionTotalTokens:
     session.sessionTokens.input +
