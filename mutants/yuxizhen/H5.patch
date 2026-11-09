@@ -1,0 +1,13 @@
+diff --git a/packages/opencode/src/session/revert.ts b/packages/opencode/src/session/revert.ts
+index ebb2715..7d21248 100644
+--- a/packages/opencode/src/session/revert.ts
++++ b/packages/opencode/src/session/revert.ts
+@@ -64,7 +64,7 @@ const layer = Layer.effect(
+             if ((msg.info.id === input.messageID && !input.partID) || part.id === input.partID) {
+               const partID = remaining.some((item) => ["text", "tool"].includes(item.type)) ? input.partID : undefined
+               rev = {
+-                messageID: !partID && lastUser ? lastUser.id : msg.info.id,
++                messageID: msg.info.id,
+                 partID,
+               }
+             }
