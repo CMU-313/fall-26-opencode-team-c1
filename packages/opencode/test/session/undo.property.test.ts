@@ -25,6 +25,9 @@ import { TestLLMServer } from "../lib/llm-server"
 import { testProviderConfig } from "../lib/test-provider"
 import { createdTurn, editedTurn, prunedTurn, separatedEdits, undoneTurn } from "./undo.generator"
 
+// Seed property tests.
+fc.configureGlobal({ seed: 42 })
+
 // Snapshots skip new untracked files larger than this (src/snapshot/index.ts).
 const SNAPSHOT_LIMIT = 2 * 1024 * 1024
 const PRUNED_SNAPSHOT = "0".repeat(40)

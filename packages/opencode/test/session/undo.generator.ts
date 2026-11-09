@@ -2,6 +2,9 @@
 // above each one explains why it produces the cases it does.
 import fc from "fast-check"
 
+// Seed property tests.
+fc.configureGlobal({ seed: 42 })
+
 // Generator choice: paths are drawn from a pool of names known to be hard for
 // git, because a random string almost never contains them: spaces, non-ASCII
 // (which git quotes in plain output), leading dashes, glob characters and
