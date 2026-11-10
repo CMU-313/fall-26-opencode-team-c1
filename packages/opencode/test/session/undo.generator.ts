@@ -2,8 +2,9 @@
 // above each one explains why it produces the cases it does.
 import fc from "fast-check"
 
-// Seed property tests.
-fc.configureGlobal({ seed: 42 })
+// Seed property tests. Under Stryker, skip shrinking: a mutant only needs to
+// fail, and shrinking a counterexample can take longer than the mutant's timeout.
+fc.configureGlobal({ seed: 42, endOnFailure: process.env.STRYKER === "1" })
 
 // Generator choice: paths are drawn from a pool of names known to be hard for
 // git, because a random string almost never contains them: spaces, non-ASCII

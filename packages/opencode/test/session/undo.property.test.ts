@@ -25,8 +25,9 @@ import { TestLLMServer } from "../lib/llm-server"
 import { testProviderConfig } from "../lib/test-provider"
 import { createdTurn, editedTurn, prunedTurn, separatedEdits, undoneTurn } from "./undo.generator"
 
-// Seed property tests.
-fc.configureGlobal({ seed: 42 })
+// Seed property tests. Under Stryker, skip shrinking: a mutant only needs to
+// fail, and shrinking a counterexample can take longer than the mutant's timeout.
+fc.configureGlobal({ seed: 42, endOnFailure: process.env.STRYKER === "1" })
 
 // Snapshots skip new untracked files larger than this (src/snapshot/index.ts).
 const SNAPSHOT_LIMIT = 2 * 1024 * 1024
