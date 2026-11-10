@@ -1,88 +1,26 @@
 // Property-based tests for the codebase walkthrough gate (P4, bnajibmo).
 // Each test checks one requirement from traceability/bnajibmo.md against
 // many generated inputs, not only the single example from P3.
+// The harness and generators live in walkthrough.harness.ts.
 
 import { describe, expect, test } from "bun:test"
-import { Effect, Exit } from "effect"
 import fc from "fast-check"
 import path from "path"
-import { AgentV2 } from "@opencode-ai/core/agent"
-import { QuestionV2 } from "@opencode-ai/core/question"
-import { SessionMessage } from "@opencode-ai/core/session/message"
-import { SessionSchema } from "@opencode-ai/core/session/schema"
-import { Walkthrough } from "@opencode-ai/core/session/runner/walkthrough"
-import type { ToolRegistry } from "@opencode-ai/core/tool/registry"
+import {
+  arbEdit,
+  arbEdits,
+  arbPath,
+  arbReads,
+  arbText,
+  dir,
+  entries,
+  expected,
+  harness,
+  held,
+  names,
+} from "./walkthrough.harness"
 
-const dir = "/project"
-const edits = ["edit", "write", "apply_patch"] as const
-const held = new Set<string>([...edits, "bash"])
-type ReadKind = "file" | "missing" | "dir"
-type Read = { path: string; kind: ReadKind }
-
-let calls = 0
-const call = (name: string, input: unknown): ToolRegistry.ExecuteInput => ({
-  sessionID: SessionSchema.ID.make("ses_property"),
-  agent: AgentV2.defaultID,
-  assistantMessageID: SessionMessage.ID.make("msg_property"),
-  call: { type: "tool-call", id: `call-${calls++}`, name, input },
-})
-
-// A scripted user: each prompt consumes the next answer. "dismiss" closes the
-// prompt without choosing, which is what Esc does in the TUI.
-function harness(answers: string[]) {
-  const prompts: string[] = []
-  const order: string[] = []
-  const gate = Walkthrough.make(dir, {
-    ask: (input) =>
-      Effect.suspend(() => {
-        prompts.push(input.questions[0].question)
-        const answer = answers.shift() ?? "dismiss"
-        order.push(`prompt:${answer}`)
-        if (answer === "dismiss") return Effect.fail(new QuestionV2.RejectedError())
-        return Effect.succeed([[answer]])
-      }),
-  })
-  const run = async (name: string, input: unknown, kind: ReadKind = "file") => {
-    const execute: ToolRegistry.Materialization["settle"] = () =>
-      Effect.sync(() => {
-        order.push(name)
-        if (kind === "missing") return { result: { type: "error", value: "not found" } }
-        const structured = kind === "dir" ? { entries: [] } : { content: "text" }
-        return { result: { type: "json", value: {} }, output: { structured, content: [] } }
-      })
-    const exit = await Effect.runPromise(gate.settle(call(name, input), execute).pipe(Effect.exit))
-    if (Exit.isFailure(exit)) return "blocked"
-    return exit.value.result.type === "error" ? "refused" : "ran"
-  }
-  const read = async (reads: Read[]) => {
-    for (const r of reads) await run("read", { path: r.path }, r.kind)
-  }
-  const ranHeld = () => order.filter((name) => held.has(name))
-  return { gate, prompts, order, run, read, ranHeld }
-}
-
-// What the gate must list: every distinct file read successfully, resolved
-// against the project, in the order first read. Missing files and directory
-// listings don't count.
-const expected = (reads: Read[]) => [
-  ...new Set(reads.filter((r) => r.kind === "file").map((r) => path.resolve(dir, r.path))),
-]
-const entries = (paths: string[], relative = false) =>
-  paths.map((p) => ({ path: relative ? path.relative(dir, p) : p, explanation: `${path.basename(p)} matters here.` }))
-
-// Generators. A small pool of names so reads repeat, and each path comes in the
-// three spellings the model actually uses (bare, ./, absolute), so the same
-// file can be read twice under different names. Some reads fail or hit a
-// directory, which the gate must leave out of the list.
-const names = ["a.ts", "b.ts", "src/c.ts", "test/d.test.ts", "e.md"]
-const arbPath = fc
-  .tuple(fc.constantFrom(...names), fc.constantFrom("", "./", `${dir}/`))
-  .map(([name, prefix]) => prefix + name)
-const arbRead = fc.record({ path: arbPath, kind: fc.constantFrom<ReadKind>("file", "file", "missing", "dir") })
-const arbReads = fc.array(arbRead, { maxLength: 6 })
-const arbEdit = fc.constantFrom(...edits)
-const arbEdits = fc.array(arbEdit, { minLength: 1, maxLength: 4 })
-const arbText = fc.stringMatching(/^[a-z][a-z ?]{0,20}$/)
+fc.configureGlobal({ seed: 42 })
 
 describe("walkthrough properties", () => {
   // R1: Until the user chooses Continue, the edit, write, and apply_patch tools
@@ -102,6 +40,10 @@ describe("walkthrough properties", () => {
           for (const tool of tools) results.push(await h.run(tool, { walkthrough: list }))
           const prompt = h.order.indexOf(`prompt:${answer}`)
           expect(prompt).toBeGreaterThanOrEqual(0)
+          // One prompt per request: after Cancel or dismiss the remaining
+          // edits are blocked without asking again (P5 strengthening, H3).
+          expect(h.prompts).toHaveLength(1)
+          expect(h.options[0]).toEqual(["Continue", "Cancel"])
           if (answer === "Continue") {
             expect(results.every((r) => r === "ran")).toBe(true)
             for (const [i, name] of h.order.entries()) if (held.has(name)) expect(i).toBeGreaterThan(prompt)
@@ -147,20 +89,39 @@ describe("walkthrough properties", () => {
   // paths of successful file reads. The gate must accept a candidate list
   // exactly when the candidate's resolved paths equal that set with no repeats.
   test("R3: the gate accepts a list exactly when it matches the set of files read", async () => {
-    const arbMutation = fc.constantFrom("exact", "shuffled", "relative", "drop", "duplicate")
+    // P5 strengthening: "swap" and "repeat" keep the list the same length as
+    // the set of files read (H1, H2), and "missing" sends no list at all.
+    const arbMutation = fc.constantFrom(
+      "exact",
+      "shuffled",
+      "relative",
+      "drop",
+      "duplicate",
+      "swap",
+      "repeat",
+      "missing",
+    )
     await fc.assert(
       fc.asyncProperty(arbReads, arbEdit, arbMutation, fc.nat(), async (reads, tool, mutation, seed) => {
         const files = expected(reads)
         const pick = files.length ? seed % files.length : 0
+        const unread = names.map((n) => path.resolve(dir, n)).filter((p) => !files.includes(p))
         const candidate = {
           exact: files,
           shuffled: [...files.slice(pick), ...files.slice(0, pick)],
           relative: files,
           drop: files.filter((_, i) => i !== pick),
           duplicate: files.length ? [...files, files[pick]] : files,
+          swap:
+            files.length && unread.length
+              ? files.map((p, i) => (i === pick ? unread[seed % unread.length] : p))
+              : files,
+          repeat: files.length > 1 ? files.map((p, i) => (i === pick ? files[(pick + 1) % files.length] : p)) : files,
+          missing: files,
         }[mutation]
         const resolved = candidate.map((p) => path.resolve(dir, p))
         const accepts =
+          mutation !== "missing" &&
           resolved.length === files.length &&
           new Set(resolved).size === resolved.length &&
           resolved.every((p) => files.includes(p))
@@ -168,10 +129,13 @@ describe("walkthrough properties", () => {
         const h = harness(["Continue"])
         await h.read(reads)
         const list = entries(candidate, mutation === "relative")
-        const result = await h.run(tool, { walkthrough: list })
+        const result = await h.run(tool, mutation === "missing" ? {} : { walkthrough: list })
         expect(result).toBe(accepts ? "ran" : "refused")
         expect(h.prompts).toHaveLength(accepts ? 1 : 0)
-        if (accepts) for (const e of list) expect(h.prompts[0]).toContain(`${e.path} — ${e.explanation}`)
+        if (accepts) {
+          const lines = h.prompts[0].split("\n")
+          for (const e of list) expect(lines).toContain(`${e.path} — ${e.explanation}`)
+        }
       }),
     )
   })
@@ -268,6 +232,8 @@ describe("walkthrough properties", () => {
         expect(h.ranHeld()).toEqual([])
         expect(await h.run(tool, { walkthrough: list, walkthrough_answer: answer })).toBe("ran")
         expect(h.prompts).toHaveLength(2)
+        // Typing a question is only possible if the prompt allows a custom answer.
+        expect(h.customs).toEqual([true, true])
         expect(h.prompts[1]).toContain(`Your question: ${question}`)
         expect(h.prompts[1]).toContain(`Answer: ${answer}`)
         expect(h.order.indexOf(tool)).toBeGreaterThan(h.order.indexOf("prompt:Continue"))
