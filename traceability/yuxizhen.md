@@ -41,8 +41,52 @@ CI tests times out for unit tests. Since this is not the main focus of the curre
 ## Hand-written mutants
 | ID | Requirement targeted | Change | Predicted killer | Actual result |
 |---|---|---|---|---|
-| H1 | R1 | `snapshot/index.ts`: `remove(op.file)` line deleted, so a file created in the previous run would remain after /undo | "Agent created files from the last turn are deleted from disk" (R1) | |
+| H1 | R1 | `snapshot/index.ts`: `yield* remove(op.file)` line deleted, so a file created in the previous run would remain after /undo | "Agent created files from the last turn are deleted from disk" (R1) | |
 | H2 | R2 | `snapshot/index.ts`: change `?? true` to `?? false` in isEdited, so a file git can't read is not counted as edited, leading to downstream revert path instead of `removeAgentChanges`. | "Files agent edited that hasn't changed is restored to its content before the turn." (R2) | |
 | H3 | R3 | `snapshot/index.ts`: change `merged.code !== 0` to `merged.code === 0`, treating a clean merge as a conflict instead of directly restoring. | "User edits that don't touch agent lines leads to agent lines being reverted." (R3) | | 
 | H4 | R5 | `session/revert.ts`: changes `remove` to keep user messages with no partID, so previous-turn user prompt is still in history. | "`/undo` removes the undone prompt, the agent's response, and and any file contents read." (R5) | | 
 | H5 | R5 | `session/revert.ts`: removes the partID and lastUser check so all messages revert to the last message instead of the user message that started the turn (if one is found); if the called passed an assistant message's id, the mutant keeps prompt 1 in the history. | "`/undo` removes the undone prompt, the agent's response, and and any file contents read." (R5) | | 
+
+
+## Stryker Comparison
+
+### Handwritten mutants Stryker never generated
+**H1**: H1.patch deletes the `yield* remove(op.file)` line, which is a YieldExpression. By default, Stryker's removal mutators target BlockStatement boundaries. yield* is tied to the control flow of a generator, which Stryker avoids to delete. 
+**H4**: H4.patch turns `partID ? 1 : 0` to `1`. Stryker's ConditionalExpression mutator targets conditions, replacing boolean statements with a plain `true` or `false`, but it won't directly destroy a tertary branch and swap in `1`. The ArithemeticOperator mutator flipped the `+` to `-`, but it doesn't evaluate the statement within the parentheses that follows. 
+
+### Some survivors I would've not thought of
+1. Checking every element in the list fulfills the requriement instead of any element. 
+```
+[Survived] MethodExpression
+src/session/revert.ts:65:30
+-                 const partID = remaining.some((item) => ["text", "tool"].includes(item.type)) ? input.partID : undefined
++                 const partID = remaining.every(item => ["text", "tool"].includes(item.type)) ? input.partID : undefined
+```
+2. Initialize an intended empty data structure with an element.
+```
+[Survived] ArrayDeclaration
+src/session/revert.ts:83:33
+-         const range = index < 0 ? [] : all.slice(index)
++         const range = index < 0 ? ["Stryker was here"] : all.slice(index)
+```
+3. Removed null/undefined guard before field access. 
+```
+[Survived] OptionalChaining
+src/snapshot/index.ts:424:44
+-             if (entry.code !== 0 || !oid || !mode?.startsWith("100")) return
++             if (entry.code !== 0 || !oid || !mode.startsWith("100")) return
+```
+I'd say (1) and (3) are bugs that developers might plausibly write, while (2) is less likely. 
+
+### What each approach finds that the other skips
+Handwritten mutants
+- Syntax errors (Stryker avoids mutants that cause compile errors)
+- Removed lines in the control flow
+- Business logic edge cases
+- Architectural / integration gaps (e.g. plain string SQL query)
+
+Stryker-generated mutants
+- Nulls, undefined, empty strings
+- initialized data structure with elements
+- Numerical values 
+- "Flips" for every statement (true v.s. false, < v.s. >, + v.s. -, !== v.s. ===)
