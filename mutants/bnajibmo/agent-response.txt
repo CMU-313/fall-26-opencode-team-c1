@@ -1,0 +1,20 @@
+> build · qwen3.5-9b
+```ts
+describe("R4 walkthrough file list gate", () => {
+  test("walkthrough lists only files read in current request", async () => {
+    fc.assert(
+      fc.asyncProperty(fc.constantFrom(fc.constantFrom("math.js"), fc.constantFrom("utils.js"))),
+      async ({ mathPath, utilsPath }) => {
+        const { gate, prompts, order, run, read, ranHeld } = harness(["math.js", "submit"])
+        await read([{ path: mathPath, kind: "file" }])
+        const editResult = await run("edit", { file: utilsPath, content: "x=1" })
+        expect(prompts).toEqual([])
+        expect(order).toEqual(["read", "edit"])
+        expect(editResult).toBe("refused")
+        expect(ranHeld()).toEqual([])
+        expect(gate.state).toBe("blocked")
+      },
+    )
+  }, { timeout: 30000 })
+})
+```

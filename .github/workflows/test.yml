@@ -57,8 +57,13 @@ jobs:
             turbo-${{ runner.os }}-${{ hashFiles('turbo.json', '**/package.json') }}-
             turbo-${{ runner.os }}-
 
+      - name: Run walkthrough property tests (bnajibmo)
+        timeout-minutes: 5
+        working-directory: packages/opencode
+        run: bun test test/session/walkthrough.property.test.ts
+
       - name: Run unit tests
-        timeout-minutes: 10
+        timeout-minutes: 15
         # Default turbo concurrency (10) oversubscribes ubuntu-latest's 4
         # vCPUs across 5 packages' test tasks running at once — same
         # contention issue typecheck.yml already caps for tsgo.
