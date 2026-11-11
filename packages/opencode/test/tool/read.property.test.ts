@@ -7,6 +7,9 @@ import { afterEach, describe, expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Cause, Effect, Exit, Layer } from "effect"
 import fc from "fast-check"
+
+// fixed seed so stryker gets the same inputs every run (p5)
+fc.configureGlobal({ seed: 42 })
 import path from "path"
 import { Agent } from "../../src/agent/agent"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"

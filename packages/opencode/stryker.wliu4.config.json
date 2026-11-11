@@ -1,0 +1,15 @@
+{
+  "testRunner": "command",
+  "commandRunner": { "command": "bun test test/tool/read.property.test.ts" },
+  "mutate": [
+    "src/tool/read.ts:137-180",
+    "src/tool/read.ts:255-260",
+    "src/tool/read.ts:331-351",
+    "src/agent/agent.ts:132-137",
+    "src/permission/index.ts:28-38"
+  ],
+  "inPlace": true,
+  "concurrency": 1,
+  "coverageAnalysis": "off",
+  "reporters": ["html", "clear-text", "progress"]
+}
