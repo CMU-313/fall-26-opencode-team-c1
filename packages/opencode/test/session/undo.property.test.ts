@@ -4,7 +4,7 @@ import { describe, expect } from "bun:test"
 import fc from "fast-check"
 import fs from "fs/promises"
 import path from "path"
-import { Effect, Layer, Scope } from "effect"
+import { Deferred, Effect, Layer, Option, Schema, Scope } from "effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -12,18 +12,29 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { EventV2Bridge } from "@/event-v2-bridge"
 import { LSP } from "@/lsp/lsp"
 import { Session } from "@/session/session"
+import { Storage } from "@/storage/storage"
 import { MCP } from "../../src/mcp"
 import { SessionPrompt } from "../../src/session/prompt"
 import { SessionRevert } from "../../src/session/revert"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { Snapshot } from "../../src/snapshot"
 import { provideTmpdirInstance, provideTmpdirServer } from "../fixture/fixture"
-import { testEffect } from "../lib/effect"
+import { awaitWithTimeout, testEffect } from "../lib/effect"
 import { TestLLMServer } from "../lib/llm-server"
 import { testProviderConfig } from "../lib/test-provider"
-import { createdTurn, editedTurn, prunedTurn, separatedEdits, undoneTurn } from "./undo.generator"
+import {
+  conflictingEdits,
+  consecutiveUndo,
+  createdTurn,
+  editedTurn,
+  prunedTurn,
+  reportedTurn,
+  separatedEdits,
+  undoneTurn,
+} from "./undo.generator"
 
 // Seed property tests. Under Stryker, skip shrinking: a mutant only needs to
 // fail, and shrinking a counterexample can take longer than the mutant's timeout.
@@ -40,7 +51,15 @@ const TEST_TIMEOUT = 180_000
 
 const revertIt = testEffect(
   LayerNode.compile(
-    LayerNode.group([Session.node, SessionRevert.node, Snapshot.node, SessionProjector.node, CrossSpawnSpawner.node]),
+    LayerNode.group([
+      Session.node,
+      SessionRevert.node,
+      Snapshot.node,
+      SessionProjector.node,
+      CrossSpawnSpawner.node,
+      Storage.node,
+      EventV2Bridge.node,
+    ]),
   ),
 )
 
@@ -246,6 +265,41 @@ const modelSeparatedEdits = (input: typeof separatedEdits extends fc.Arbitrary<i
   }
 }
 
+// The three versions of R4's conflicting file that aren't a symlink. Undefined
+// means the file doesn't exist. Each binary version starts with a NUL byte and
+// ends in a byte the others don't, so all three differ.
+const conflictVersions = (input: typeof conflictingEdits extends fc.Arbitrary<infer T> ? T : never) => {
+  const text = (lines: string[]) => new TextEncoder().encode(lines.map((line) => line + input.eol).join(""))
+  const base = Array.from({ length: input.lines }, (_, line) => `line-${line}`)
+  const agentLine = input.agentLine % input.lines
+  const userLine = Math.min(Math.max(agentLine + input.userOffset, 0), input.lines - 1)
+  const agent = base.with(agentLine, `agent-${agentLine}`)
+  if (input.kind === "binary") {
+    return {
+      before: new Uint8Array([0, ...input.bytes.before, 3]),
+      agent: new Uint8Array([0, ...input.bytes.agent, 1]),
+      user: new Uint8Array([0, ...input.bytes.user, 2]),
+    }
+  }
+  if (input.kind === "recreated") return { before: text(base), agent: undefined, user: text(["recreated by the user"]) }
+  return { before: text(base), agent: text(agent), user: text(agent.with(userLine, `user-${userLine}`)) }
+}
+
+// Listeners receive event data untyped, so R6 decodes the fields it checks.
+const decodeDiffEvent = Schema.decodeUnknownOption(
+  Schema.Struct({
+    sessionID: Schema.String,
+    diff: Schema.Array(Schema.Struct({ file: Schema.optional(Schema.String) })),
+  }),
+)
+
+const symlink = (target: string, link: string) =>
+  Effect.promise(async () => {
+    await fs.rm(link, { force: true })
+    await fs.symlink(target, link)
+  })
+const readLink = (link: string) => Effect.promise(() => fs.readlink(link))
+
 const snapshotTests = process.platform === "win32" ? describe.skip : describe
 
 snapshotTests("/undo properties", () => {
@@ -427,6 +481,77 @@ snapshotTests("/undo properties", () => {
     TEST_TIMEOUT,
   )
 
+  // R2: When /undo reverts a turn, each snapshot-covered file (see R1) that the
+  // agent edited or deleted and that hasn't changed since the turn ended returns
+  // to its exact pre-turn content, unless its snapshot was pruned after about 7
+  // days (then it's left untouched and reported under R6), and only the working
+  // tree changes, not the git index, HEAD, or commits.
+  // Kind: round-trip
+  // Acceptance criteria: this covers /undo run twice in a row, which undoes the
+  // last two turns. After the second /undo, every file turn 1 touched has its
+  // pre-turn-1 bytes, a file the user edited between the turns keeps that edit
+  // (turn 1 never changed it, and turn 2 is already undone), every other file is
+  // unchanged, a gitignored tracked file keeps the agent's edit because snapshots
+  // don't cover it, and HEAD doesn't move.
+  revertIt.live(
+    "R2: two /undo in a row restore every file to its state before both turns",
+    undoProperty(consecutiveUndo, 20, (input) =>
+      provideTmpdirInstance(
+        Effect.fnUntraced(function* (dir) {
+          const sessions = yield* Session.Service
+          const revert = yield* SessionRevert.Service
+          const at = (file: string) => path.join(dir, file)
+          const pathOf = (index: number) => input.base[index % input.base.length]!.path
+          const ignored = at("ignored-tracked.log")
+          const agentIgnoredEdit = new TextEncoder().encode("edited by the agent while gitignored\n")
+          const apply = (ops: ReadonlyArray<{ file: number; content: Uint8Array | undefined }>) =>
+            Effect.forEach(ops, (op) =>
+              op.content === undefined ? del(at(pathOf(op.file))) : put(at(pathOf(op.file)), op.content),
+            ).pipe(Effect.asVoid)
+
+          yield* Effect.forEach(input.base, (file) => put(at(file.path), file.content))
+          if (input.ignoredTracked) yield* put(ignored, "tracked before .gitignore matched it\n")
+          yield* commitAll(dir)
+          // Committed first, so the file stays tracked once .gitignore matches it.
+          yield* put(at(".gitignore"), "*.log\n")
+          yield* commitAll(dir)
+          const head = yield* git(dir, "rev-parse", "HEAD")
+
+          const touched = new Set(input.turn1.map((op) => pathOf(op.file)))
+          const between = input.between.filter((edit) => !touched.has(pathOf(edit.file)))
+          const session = yield* sessions.create({})
+          const first = yield* agentTurn(session.id, dir, [
+            apply(input.turn1).pipe(
+              Effect.andThen(input.ignoredTracked ? put(ignored, agentIgnoredEdit) : Effect.void),
+            ),
+          ])
+          yield* Effect.forEach(between, (edit) => put(at(pathOf(edit.file)), edit.content))
+          const second = yield* agentTurn(session.id, dir, [
+            apply([
+              ...input.turn2,
+              ...between.flatMap((edit) =>
+                edit.agentAfter === undefined ? [] : [{ file: edit.file, content: edit.agentAfter }],
+              ),
+            ]),
+          ])
+
+          yield* revert.revert({ sessionID: session.id, messageID: second })
+          yield* revert.revert({ sessionID: session.id, messageID: first })
+
+          const userEdits = new Map(between.map((edit) => [pathOf(edit.file), edit.content]))
+          for (const file of input.base) {
+            const expected = touched.has(file.path) ? file.content : (userEdits.get(file.path) ?? file.content)
+            expect(yield* readBytes(at(file.path))).toEqual(expected)
+          }
+          if (input.ignoredTracked) expect(yield* readBytes(ignored)).toEqual(agentIgnoredEdit)
+          expect(yield* git(dir, "rev-parse", "HEAD")).toBe(head)
+        }),
+        { git: true },
+      ),
+    ),
+    TEST_TIMEOUT,
+  )
+
   // R3: If, after the turn ended, the user edits a text file the agent modified
   // and those edits neither touch nor directly adjoin any line the agent changed,
   // /undo reverts only the agent's changes and keeps the user's edits exactly,
@@ -457,6 +582,160 @@ snapshotTests("/undo properties", () => {
           yield* revert.revert({ sessionID: session.id, messageID })
 
           expect(yield* readBytes(file)).toEqual(model.expected)
+        }),
+        { git: true },
+      ),
+    ),
+    TEST_TIMEOUT,
+  )
+
+  // R4: If the user's post-turn edits touch or directly adjoin lines the agent
+  // changed, or the file can't be merged by line (binary, created by the agent
+  // then edited, or deleted by the agent then recreated), /undo names the file and
+  // any conflicting on-disk lines in the TUI and asks to overwrite (return it to
+  // its pre-turn state, discarding the user's edits) or skip (leave it
+  // byte-identical, which is also the result of dismissing the prompt or using a
+  // client that can't prompt), while other files are still reverted.
+  // Kind: invariant
+  // Acceptance criteria: SessionRevert is a client that can't prompt, so it must
+  // skip. The conflicting file is byte-identical to its state just before /undo
+  // (a symlink keeps its target, and nothing is written through it), and every
+  // other file the agent edited is back to its pre-turn bytes. Created-then-edited
+  // files are covered by the R1 property. The TUI's naming of files and lines and
+  // the overwrite choice aren't implemented, so they aren't checked.
+  revertIt.live(
+    "R4: /undo leaves a file it can't merge byte-identical and still reverts the rest",
+    undoProperty(conflictingEdits, 25, (input) =>
+      provideTmpdirInstance(
+        Effect.fnUntraced(function* (dir) {
+          const sessions = yield* Session.Service
+          const revert = yield* SessionRevert.Service
+          const at = (file: string) => path.join(dir, file)
+          const file = at("Conflict.java")
+          const link = at("conflict-link")
+          // Dangling targets, so a write through the link would create one.
+          const targets = { before: "target-before.txt", agent: "target-agent.txt", new: "target-user.txt" }
+          const versions = conflictVersions(input)
+          const write = (content: Uint8Array | undefined) => (content === undefined ? del(file) : put(file, content))
+
+          yield* Effect.forEach(input.others, (other) => put(at(other.path), other.before))
+          yield* input.kind === "symlink" ? symlink(targets.before, link) : write(versions.before)
+          yield* commitAll(dir)
+
+          const session = yield* sessions.create({})
+          const messageID = yield* agentTurn(session.id, dir, [
+            Effect.forEach(input.others, (other) => put(at(other.path), other.agent)).pipe(
+              Effect.andThen(input.kind === "symlink" ? symlink(targets.agent, link) : write(versions.agent)),
+            ),
+          ])
+          // The turn is over, so this edit is the user's.
+          yield* input.kind === "symlink" ? symlink(targets[input.userTarget], link) : write(versions.user)
+          const linkBeforeUndo = input.kind === "symlink" ? yield* readLink(link) : undefined
+          const bytesBeforeUndo = input.kind === "symlink" ? undefined : yield* readBytes(file)
+
+          yield* revert.revert({ sessionID: session.id, messageID })
+
+          if (input.kind === "symlink") {
+            expect(yield* readLink(link)).toBe(linkBeforeUndo!)
+            for (const target of Object.values(targets)) expect(yield* exists(at(target))).toBe(false)
+          }
+          if (input.kind !== "symlink") expect(yield* readBytes(file)).toEqual(bytesBeforeUndo!)
+          for (const other of input.others) expect(yield* readBytes(at(other.path))).toEqual(other.before)
+        }),
+        { git: true },
+      ),
+    ),
+    TEST_TIMEOUT,
+  )
+
+  // R6: After every /undo, the TUI shows `Reverted (N files changed)` with each
+  // affected path marked deleted, restored, kept your edits, skipped, or not
+  // reverted (uncovered files only if changed by the edit, write, or apply_patch
+  // tools), or it says that files weren't reverted because the project has no
+  // snapshots, or that there was nothing to undo.
+  // Kind: model / oracle
+  // Acceptance criteria: the TUI's wording isn't implemented, so this checks the
+  // data the TUI's file list reads after /undo: the stored session diff, the diff
+  // event, the session summary, and the revert's own diff. Each must name exactly
+  // the files the undone turn changed (not earlier turns, and not a file rewritten
+  // with its own bytes), and the totals must be the lines the generator added and
+  // removed. /undo given a message the session doesn't have is the nothing-to-undo
+  // case: it records no revert and changes no files.
+  revertIt.live(
+    "R6: /undo reports exactly the files and lines the undone turn changed",
+    undoProperty(reportedTurn, 20, (input) =>
+      provideTmpdirInstance(
+        Effect.fnUntraced(function* (dir) {
+          const sessions = yield* Session.Service
+          const revert = yield* SessionRevert.Service
+          const storage = yield* Storage.Service
+          const events = yield* EventV2Bridge.Service
+          const at = (file: string) => path.join(dir, file)
+          const lines = (prefix: string, count: number) =>
+            Array.from({ length: count }, (_, line) => `${prefix}-${line}\n`).join("")
+          const files = input.files.map((file) => ({ ...file, path: `${file.name}.txt` }))
+
+          yield* Effect.forEach(
+            files.filter((file) => file.change.kind !== "create"),
+            (file) => put(at(file.path), lines("base", file.change.base)),
+          )
+          yield* commitAll(dir)
+
+          const session = yield* sessions.create({})
+          yield* Effect.forEach(
+            Array.from({ length: input.earlierTurns }, (_, index) => index),
+            (index) => agentTurn(session.id, dir, [put(at(`earlier-${index}.txt`), "from an earlier turn\n")]),
+          )
+          const messageID = yield* agentTurn(session.id, dir, [
+            Effect.forEach(files, (file) => {
+              const change = file.change
+              if (change.kind === "delete") return del(at(file.path))
+              if (change.kind === "truncate") return put(at(file.path), lines("base", change.base - change.lines))
+              return put(at(file.path), lines("base", change.base) + lines("added", change.lines))
+            }).pipe(Effect.asVoid),
+          ])
+
+          const status = yield* gitStatus(dir)
+          const nothing = yield* revert.revert({ sessionID: session.id, messageID: MessageID.ascending() })
+          expect(nothing.revert).toBeUndefined()
+          expect(yield* gitStatus(dir)).toEqual(status)
+
+          const published = yield* Deferred.make<ReadonlyArray<{ readonly file?: string }>>()
+          const unsubscribe = yield* events.listen((event) => {
+            if (event.type !== Session.Event.Diff.type) return Effect.void
+            const data = decodeDiffEvent(event.data)
+            if (Option.isSome(data) && data.value.sessionID === session.id) {
+              Deferred.doneUnsafe(published, Effect.succeed(data.value.diff))
+            }
+            return Effect.void
+          })
+          yield* Effect.addFinalizer(() => unsubscribe)
+
+          const undone = yield* revert.revert({ sessionID: session.id, messageID })
+
+          const changed = files.filter((file) => file.change.kind !== "same")
+          const expected = changed.map((file) => file.path).toSorted()
+          const paths = (diffs: ReadonlyArray<{ readonly file?: string }>) => diffs.map((diff) => diff.file).toSorted()
+          const stored = yield* storage.read<Snapshot.FileDiff[]>(["session_diff", session.id]).pipe(Effect.orDie)
+          expect(paths(stored)).toEqual(expected)
+          expect(paths(yield* awaitWithTimeout(Deferred.await(published), "no diff event after /undo"))).toEqual(
+            expected,
+          )
+          expect(undone.summary?.files).toBe(expected.length)
+          expect(undone.summary?.additions).toBe(
+            changed.reduce(
+              (sum, file) => sum + (["create", "append"].includes(file.change.kind) ? file.change.lines : 0),
+              0,
+            ),
+          )
+          expect(undone.summary?.deletions).toBe(
+            changed.reduce((sum, file) => {
+              if (file.change.kind === "truncate") return sum + file.change.lines
+              if (file.change.kind === "delete") return sum + file.change.base
+              return sum
+            }, 0),
+          )
+          for (const file of expected) expect(undone.revert?.diff).toContain(file)
         }),
         { git: true },
       ),
@@ -548,14 +827,16 @@ describe("/undo context properties", () => {
           if (input.carriers.includes("attachment")) {
             yield* addText(undone.id, user.id, `Attached notes.txt: ${input.secret}`, true)
           }
-          yield* Effect.forEach(
+          const assistants = yield* Effect.forEach(
             Array.from({ length: input.assistantMessages }, (_, index) => index),
             Effect.fnUntraced(function* (index) {
               const assistant = yield* addAssistant(undone.id, user.id, dir)
+              // A real assistant message always has parts, whatever it read.
+              yield* addText(undone.id, assistant.id, `ASSISTANT-STEP-${index}`)
               if (input.carriers.includes("assistant-text")) {
                 yield* addText(undone.id, assistant.id, `notes.txt says ${input.secret}`)
               }
-              if (!input.carriers.includes("tool-output")) return
+              if (!input.carriers.includes("tool-output")) return assistant.id
               yield* sessions.updatePart({
                 id: PartID.ascending(),
                 messageID: assistant.id,
@@ -572,10 +853,12 @@ describe("/undo context properties", () => {
                   time: { start: 0, end: 1 },
                 },
               })
+              return assistant.id
             }),
           )
 
-          yield* revert.revert({ sessionID: undone.id, messageID: user.id })
+          const targets = [user.id, ...assistants]
+          yield* revert.revert({ sessionID: undone.id, messageID: targets[input.target % targets.length]! })
           const afterUndo = yield* sendSecondPrompt(undone.id)
 
           const control = yield* sessions.create({ title: "control" })
@@ -586,6 +869,7 @@ describe("/undo context properties", () => {
           const sent = JSON.stringify(afterUndo)
           expect(sent).not.toContain(inRequest(input.secret))
           expect(sent).not.toContain(inRequest(input.firstPrompt))
+          expect(sent).not.toContain("ASSISTANT-STEP-")
           expect(afterUndo.at(-1)?.messages).toEqual(withoutTurn.at(-1)?.messages)
         }),
         { git: true, config: testProviderConfig },

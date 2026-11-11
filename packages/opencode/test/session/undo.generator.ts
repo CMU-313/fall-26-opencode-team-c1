@@ -165,6 +165,93 @@ export const editedTurn = fc.oneof(
   { weight: 1, arbitrary: globCollision },
 )
 
+// Generator choice for consecutive /undo under R2: two turns are undone one after
+// the other, so the second /undo starts from files the first one already
+// reverted. Ops pick base files by index, and `content` of undefined deletes the
+// file, so turns overlap on some files and not others. `between` is a user edit
+// made after turn 1 to a file turn 1 doesn't touch (the test skips the others),
+// and `agentAfter` makes turn 2 edit that file again. Undoing both turns must
+// keep the user's edit, which turn 1's snapshot doesn't hold. `ignoredTracked` is
+// a committed file that .gitignore matches, which isn't covered by snapshots, so
+// /undo must leave the agent's edit to it in place. Turn 2 never deletes a file
+// turn 1 touched: /undo currently breaks R2 in that case. The second /undo first
+// restores the snapshot taken by the first one, and Snapshot.restore doesn't
+// delete files that snapshot lacks. The file the first /undo brought back then
+// looks edited by the user and keeps turn 1's bytes.
+const fileOp = fc.record({
+  file: fc.nat({ max: 5 }),
+  content: fc.option(anyContent, { nil: undefined, freq: 4 }),
+})
+export const consecutiveUndo = fc
+  .record({
+    base: samePathList(fc.record({ path: anyPath, content: anyContent }), 2, 6),
+    turn1: fc.array(fileOp, { minLength: 1, maxLength: 4 }),
+    between: fc.array(
+      fc.record({
+        file: fc.nat({ max: 5 }),
+        content: anyContent,
+        agentAfter: fc.option(anyContent, { nil: undefined }),
+      }),
+      { maxLength: 3 },
+    ),
+    turn2: fc.array(fileOp, { maxLength: 4 }),
+    ignoredTracked: fc.boolean(),
+  })
+  .map((input) => {
+    const touched = new Set(input.turn1.map((op) => op.file % input.base.length))
+    return {
+      ...input,
+      turn2: input.turn2.filter((op) => op.content !== undefined || !touched.has(op.file % input.base.length)),
+    }
+  })
+
+// Generator choice for R4: each case has one file /undo can't merge by line, in
+// each of the ways R4 lists. In `text`, the user's edit lands on the agent's line
+// or a line directly next to it (`userOffset`). `binary` holds NUL bytes.
+// `recreated` is deleted by the agent and then written again by the user. A
+// symlink can't be merged by line either: the agent and then the user point it at
+// another target, and `userTarget` of "before" points it back at its pre-turn
+// target, which is the only way the two edits merge cleanly. `others` are files
+// the agent edited and the user didn't touch, which /undo must still revert.
+export const conflictingEdits = fc.record({
+  kind: fc.constantFrom("text" as const, "binary" as const, "symlink" as const, "recreated" as const),
+  lines: fc.integer({ min: 1, max: 6 }),
+  agentLine: fc.nat({ max: 5 }),
+  userOffset: fc.constantFrom(-1, 0, 0, 1),
+  eol: fc.constantFrom("\n", "\r\n"),
+  bytes: fc.record({ before: fc.uint8Array(), agent: fc.uint8Array(), user: fc.uint8Array() }),
+  userTarget: fc.constantFrom("before" as const, "new" as const),
+  others: samePathList(fc.record({ path: anyPath, before: anyContent, agent: anyContent }), 1, 3),
+})
+
+// Generator choice for R6: line counts are only meaningful for text, so every
+// file holds whole numbered lines and each kind of change has a known count:
+// `create` adds lines, `append` adds lines to a file that may be empty,
+// `truncate` removes lines from the end (possibly all of them, leaving an empty
+// file), `delete` removes the file, and `same` rewrites identical bytes, which
+// isn't a change and must not be reported. `earlierTurns` adds turns before the
+// undone one that change other files, so a report that reaches past the undone
+// turn shows extra paths, and 0 makes the undone turn the first message.
+const lineCount = fc.integer({ min: 0, max: 4 })
+export const reportedTurn = fc.record({
+  earlierTurns: fc.integer({ min: 0, max: 2 }),
+  files: fc.uniqueArray(
+    fc.record({
+      name: fc.stringMatching(/^[a-z0-9]{1,8}$/),
+      change: fc.oneof(
+        fc.record({ kind: fc.constant("create" as const), base: fc.constant(0), lines: lineCount.map((n) => n + 1) }),
+        fc.record({ kind: fc.constant("append" as const), base: lineCount, lines: lineCount.map((n) => n + 1) }),
+        fc
+          .record({ kind: fc.constant("truncate" as const), base: lineCount.map((n) => n + 1), lines: lineCount })
+          .map((change) => ({ ...change, lines: Math.min(change.lines + 1, change.base) })),
+        fc.record({ kind: fc.constant("delete" as const), base: lineCount.map((n) => n + 1), lines: fc.constant(0) }),
+        fc.record({ kind: fc.constant("same" as const), base: lineCount, lines: fc.constant(0) }),
+      ),
+    }),
+    { selector: (file) => file.name, minLength: 1, maxLength: 4 },
+  ),
+})
+
 // Generator choice for the pruned clause of R2: `gone` chooses which snapshots are
 // unreadable, and the agent both edits and deletes files, so a prune has to leave
 // each of them as the turn left it. It doesn't generate a pre-turn snapshot missing
@@ -214,7 +301,11 @@ export const separatedEdits = fc.record({
 // the undone turn is the whole session, and above 0 it checks /undo doesn't remove
 // too much. The fixed ZEBRA42 prefix means the secret can't appear in the system
 // prompt by chance, and the grapheme suffix reaches text that JSON has to escape.
+// `target` picks which message of the turn /undo is given: the user's prompt or
+// one of the assistant's messages. The API accepts either, and both must remove
+// the whole turn, prompt included.
 export const undoneTurn = fc.record({
+  target: fc.nat({ max: 3 }),
   earlierTurns: fc.integer({ min: 0, max: 2 }),
   secret: fc.string({ unit: "grapheme", maxLength: 8 }).map((suffix) => `ZEBRA42-${suffix}`),
   firstPrompt: fc.string({ unit: "grapheme", maxLength: 8 }).map((suffix) => `read notes.txt PROMPT-ONE-${suffix}`),
