@@ -173,11 +173,7 @@ export const editedTurn = fc.oneof(
 // and `agentAfter` makes turn 2 edit that file again. Undoing both turns must
 // keep the user's edit, which turn 1's snapshot doesn't hold. `ignoredTracked` is
 // a committed file that .gitignore matches, which isn't covered by snapshots, so
-// /undo must leave the agent's edit to it in place. Turn 2 never deletes a file
-// turn 1 touched: /undo currently breaks R2 in that case. The second /undo first
-// restores the snapshot taken by the first one, and Snapshot.restore doesn't
-// delete files that snapshot lacks. The file the first /undo brought back then
-// looks edited by the user and keeps turn 1's bytes.
+// /undo must leave the agent's edit to it in place.
 const fileOp = fc.record({
   file: fc.nat({ max: 5 }),
   content: fc.option(anyContent, { nil: undefined, freq: 4 }),
@@ -196,13 +192,6 @@ export const consecutiveUndo = fc
     ),
     turn2: fc.array(fileOp, { maxLength: 4 }),
     ignoredTracked: fc.boolean(),
-  })
-  .map((input) => {
-    const touched = new Set(input.turn1.map((op) => op.file % input.base.length))
-    return {
-      ...input,
-      turn2: input.turn2.filter((op) => op.content !== undefined || !touched.has(op.file % input.base.length)),
-    }
   })
 
 // Generator choice for R4: each case has one file /undo can't merge by line, in

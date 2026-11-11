@@ -107,7 +107,7 @@ Strengthened properties by:
   - R4: `undo.property.test.ts:592-649`
   - R6: `undo.property.test.ts:651-744`.
 
-**Bug found:** say turn 2 deletes a file that turn 1 edited, and the user runs /undo twice. The file comes back with turn 1's bytes, not its original bytes. The second /undo calls `Snapshot.restore`, which runs `read-tree` and `checkout-index -a -f` (`snapshot/index.ts:395-419`). Neither one deletes or rewrites a file that is missing from the restored tree. As a result, turn 1's revert sees the file as edited by the user and keeps it. A minimal counterexample: `src/Helper.java` starts as `[0]`, turn 1 empties it, and turn 2 deletes it. `consecutiveUndo` leaves this case out (see the comment in `undo.generator.ts`), so the property checks every other combination.
+**Bug found and fixed (violates R2):** if turn 2 deleted a file that turn 1 edited, running /undo twice brought the file back with turn 1's bytes instead of its original bytes. The second /undo restored the first one's snapshot, which doesn't delete files missing from it, so turn 1's revert took the file for a user edit and kept it (counterexample: `src/Helper.java` starts as `[0]`, turn 1 empties it, turn 2 deletes it). `revert.ts` now reverts only the patches before the earlier /undo's point, starting from the files it left, and `consecutiveUndo` no longer skips this case. The mutation report and the `revert.ts` line numbers in the tables above are from the run before this fix.
 
 #### Equivalent mutants
 

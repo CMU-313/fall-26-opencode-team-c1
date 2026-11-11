@@ -44,11 +44,19 @@ const layer = Layer.effect(
       let rev: Session.Info["revert"]
       const patches: Snapshot.RevertPatch[] = []
       let stepEnd: string | undefined
+      // How many patches come before the point an earlier /undo of this session reverted from.
+      let reverted: number | undefined
       for (const msg of all) {
         if (msg.info.role === "user") lastUser = msg.info
         const remaining = []
         for (const part of msg.parts) {
           if (rev) {
+            if (
+              reverted === undefined &&
+              msg.info.id === session.revert?.messageID &&
+              (!session.revert.partID || part.id === session.revert.partID)
+            )
+              reverted = patches.length
             // The processor saves step-finish just before its patch. A step that was aborted
             // saves only a patch, so step-start clears any end left by a previous step.
             if (part.type === "step-start") stepEnd = undefined
@@ -76,8 +84,11 @@ const layer = Layer.effect(
       if (!rev) return session
 
       rev.snapshot = session.revert?.snapshot ?? (yield* snap.track())
-      if (session.revert?.snapshot) yield* snap.restore(session.revert.snapshot)
-      yield* snap.revert(patches)
+      // An earlier /undo already reverted every patch after its point, so revert only the ones
+      // before it, from the files it left. Restoring its snapshot and reverting everything again
+      // would keep files that snapshot lacks, which then look edited by the user.
+      if (reverted === undefined && session.revert?.snapshot) yield* snap.restore(session.revert.snapshot)
+      yield* snap.revert(reverted === undefined ? patches : patches.slice(0, reverted))
       if (rev.snapshot) rev.diff = yield* snap.diff(rev.snapshot)
       const index = all.findIndex((msg) => msg.info.id === rev.messageID)
       const range = index < 0 ? [] : all.slice(index)
