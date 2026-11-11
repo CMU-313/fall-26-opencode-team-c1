@@ -70,7 +70,11 @@ const permissionCtx = (ruleset: PermissionV1.Ruleset, userAllows: boolean, sessi
         for (const pattern of req.patterns) {
           const rule = Permission.evaluate(req.permission, pattern, ruleset)
           if (rule.action === "deny") return yield* new PermissionV1.DeniedError({ ruleset: [] })
-          if (rule.action === "ask") needsAsk = true
+          // (p5) same as the real one: anything that isn't allow asks. the first
+          // version only asked on "ask", so a rule with a broken action like ""
+          // counted as allow and stryker's "" mutants survived
+          if (rule.action === "allow") continue
+          needsAsk = true
         }
         if (!needsAsk) return
         prompts.push(req)
@@ -166,6 +170,8 @@ const secretName = fc.constantFrom("secrets.txt", "id_card.pdf.txt", "ssn.txt", 
 // these match the default rules in src/agent/agent.ts
 const envName = fc.constantFrom(".env", "prod.env", ".env.local", ".env.production", "app.env.test")
 const envExampleName = fc.constantFrom(".env.example", "app.env.example")
+// (p5) everyday files that should never ask under the default rules
+const normalName = fc.constantFrom("notes.txt", "README.md", "index.ts", "package.json", "env.md")
 
 // a marker that can't show up by accident, so searching for it tells us if
 // any of the file leaked
@@ -258,6 +264,22 @@ describe("read tool properties (traceability/wliu4.md)", () => {
           Effect.gen(function* () {
             const rel = dirPart + name
             yield* put(path.join(dir, rel), `API_KEY=${secret}`)
+            const { ctx, prompts } = permissionCtx(agent.permission, false)
+            const result = yield* read(dir, { filePath: path.join(dir, rel) }, ctx)
+            expect(prompts).toHaveLength(0)
+            expect(result.output).toContain(secret)
+          }),
+        { numRuns: 20 },
+      )
+
+      // (p5) only .env files ask. a normal file has no prompt, otherwise the
+      // user gets asked about every file and stops reading the prompts
+      yield* forAll(
+        [folder, normalName, marker],
+        (dirPart, name, secret) =>
+          Effect.gen(function* () {
+            const rel = dirPart + name
+            yield* put(path.join(dir, rel), `text ${secret}`)
             const { ctx, prompts } = permissionCtx(agent.permission, false)
             const result = yield* read(dir, { filePath: path.join(dir, rel) }, ctx)
             expect(prompts).toHaveLength(0)
