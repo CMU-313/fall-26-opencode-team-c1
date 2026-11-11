@@ -8,6 +8,7 @@
     "src/agent/agent.ts:132-137",
     "src/permission/index.ts:28-38"
   ],
+  "disableTypeChecks": false,
   "inPlace": true,
   "concurrency": 1,
   "coverageAnalysis": "off",
