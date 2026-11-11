@@ -1,0 +1,13 @@
+diff --git a/packages/opencode/src/tool/read.ts b/packages/opencode/src/tool/read.ts
+index 678ed44..beeb5d2 100644
+--- a/packages/opencode/src/tool/read.ts
++++ b/packages/opencode/src/tool/read.ts
+@@ -254,7 +254,7 @@ export const ReadTool = Tool.define<
+ 
+       yield* ctx.ask({
+         permission: "read",
+-        patterns: [path.relative(instance.worktree, filepath)],
++        patterns: [path.basename(filepath)],
+         always: ["*"],
+         metadata: {},
+       })

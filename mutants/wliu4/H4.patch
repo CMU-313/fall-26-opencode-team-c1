@@ -1,0 +1,13 @@
+diff --git a/packages/opencode/src/tool/read.ts b/packages/opencode/src/tool/read.ts
+index 678ed44..07f1418 100644
+--- a/packages/opencode/src/tool/read.ts
++++ b/packages/opencode/src/tool/read.ts
+@@ -161,7 +161,7 @@ export const ReadTool = Tool.define<
+ 
+             const line = text.length > MAX_LINE_LENGTH ? text.substring(0, MAX_LINE_LENGTH) + MAX_LINE_SUFFIX : text
+             const size = Buffer.byteLength(line, "utf-8") + (raw.length > 0 ? 1 : 0)
+-            if (flags.bytes + size <= MAX_BYTES) {
++            if (flags.bytes + size < MAX_BYTES) {
+               raw.push(line)
+               flags.bytes += size
+               return

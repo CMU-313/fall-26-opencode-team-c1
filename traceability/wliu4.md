@@ -47,3 +47,15 @@ All 6 properties pass now.
 ## AI use
 
 I used Claude to write and run all six properties (R1-R6) and to suggest the requirement changes and triage outcomes. The requirements and interview evidence are mine from Project 3. I reviewed the properties, changes, and triage against my notes before committing.
+
+## Hand-written mutants
+
+Patches are in `mutants/wliu4/`. Predictions were written before running any of them.
+
+| ID | Requirement targeted | Change | Predicted killer | Actual result |
+|---|---|---|---|---|
+| H1 | R1 | read.ts: the permission check uses just the file name (`path.basename(filepath)`) instead of the path from the project root, so a deny rule like `secret/ssn.txt` stops matching | R1, since the secret should leak when the file is in a folder. R2 too, since it checks the pattern is the full path | not run yet |
+| H2 | R2 | agent.ts: `"*.env.example": "allow"` moved above `"*.env.*": "ask"`, like someone sorting the rules. Rules use the last match, so .env.example now asks | R2, the .env.example part expects no prompt | not run yet |
+| H3 | R4 | read.ts: the end of file footer counts the lines shown (`file.raw.length`) instead of the lines in the file (`file.count`) | Not R4, it always reads from line 1 where both numbers are the same. Maybe R5 if it reads to the end from a later offset | not run yet |
+| H4 | R5 | read.ts: the 50 KB check changes from `<=` to `<`, so a line that would land exactly on 50 KB gets cut | Survives. The generators almost never hit exactly 51,200 bytes | not run yet |
+| H5 | R6 | read.ts: lines are cut at `>= 2000` instead of `> 2000`, so a line of exactly 2000 characters gets cut by mistake | Maybe R6. Its long lines are 1990 to 2100 characters, so it only hits exactly 2000 sometimes | not run yet |
