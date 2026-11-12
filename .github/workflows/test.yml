@@ -69,6 +69,16 @@ jobs:
         # contention issue typecheck.yml already caps for tsgo.
         run: GITHUB_ACTIONS=false bun turbo test --concurrency=4
 
+      - name: Run /undo property tests
+        # The step above uses --only-failures, which hides the names of passing
+        # tests. This one prints each property. It runs after the step above
+        # because turbo builds the workspace dependencies there, and it still
+        # runs if that step fails so the log always shows the properties.
+        if: ${{ !cancelled() }}
+        timeout-minutes: 13
+        working-directory: packages/opencode
+        run: GITHUB_ACTIONS=false bun test test/session/undo.property.test.ts --timeout 200000
+
       - name: Check generated client
         timeout-minutes: 5
         working-directory: packages/client

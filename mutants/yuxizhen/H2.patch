@@ -1,0 +1,13 @@
+diff --git a/packages/opencode/src/snapshot/index.ts b/packages/opencode/src/snapshot/index.ts
+index 02b8698..e4e9acc 100644
+--- a/packages/opencode/src/snapshot/index.ts
++++ b/packages/opencode/src/snapshot/index.ts
+@@ -499,7 +499,7 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
+               const isEdited = (op: RevertOp) => {
+                 const end = ends.get(op.file)
+                 if (end === undefined) return false
+-                return changedSince.get(end)?.has(op.rel) ?? true
++                return changedSince.get(end)?.has(op.rel) ?? false
+               }
+               yield* Effect.forEach(all.filter(isEdited), (op) => removeAgentChanges(op, ends.get(op.file)!, current))
+               const ops = all.filter((op) => !isEdited(op))
