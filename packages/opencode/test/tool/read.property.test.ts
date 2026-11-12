@@ -462,7 +462,14 @@ describe("read tool properties (traceability/wliu4.md)", () => {
       // output and the file could disagree
       const mixedLine = fc.oneof(
         { weight: 9, arbitrary: line },
-        { weight: 1, arbitrary: fc.integer({ min: 1990, max: 2100 }).map((n) => "w".repeat(n)) },
+        {
+          weight: 1,
+          // (p5) 1999, 2000 and 2001 on purpose, the random range almost never
+          // hit exactly 2000 so a cut at >= 2000 survived (H5)
+          arbitrary: fc
+            .oneof(fc.constantFrom(1999, 2000, 2001), fc.integer({ min: 1990, max: 2100 }))
+            .map((n) => "w".repeat(n)),
+        },
       )
       const caseArb = fc
         .tuple(fc.array(mixedLine, { minLength: 1, maxLength: 30 }), fc.boolean())
@@ -486,7 +493,27 @@ describe("read tool properties (traceability/wliu4.md)", () => {
             .slice(offset - 1, offset - 1 + limit)
             .map((t, i) => `${offset + i}: ${shown(t)}`)
           expect(numberedLines(result.output)).toEqual(expected)
+          // (p5) the output also has to say which file it is, or the line
+          // numbers can't be traced back to anything (C-6)
+          expect(result.output.startsWith(`<path>${file}</path>\n<type>file</type>\n<content>\n`)).toBe(true)
         }),
+      )
+
+      // (p5) letters like é, 中 and emoji take 2 to 4 bytes. the file is read in
+      // 64 KB chunks, so one of them can be split between two chunks. line 1 is
+      // padded so line 2 starts 1 to 6 bytes before the chunk edge, and line 2
+      // still has to come out exactly as written
+      const wideText = fc.string({ unit: fc.constantFrom("é", "中", "😀", "ü"), minLength: 1, maxLength: 20 })
+      yield* forAll(
+        [fc.integer({ min: 1, max: 6 }), wideText],
+        (shift, text) =>
+          Effect.gen(function* () {
+            const file = path.join(dir, "unicode.txt")
+            yield* put(file, "a".repeat(64 * 1024 - 1 - shift) + "\n" + text + "\nend\n")
+            const result = yield* read(dir, { filePath: file, offset: 2, limit: 1 })
+            expect(numberedLines(result.output)).toEqual([`2: ${text}`])
+          }),
+        { numRuns: 20 },
       )
     }),
   )
