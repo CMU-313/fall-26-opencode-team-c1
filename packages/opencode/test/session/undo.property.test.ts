@@ -36,9 +36,12 @@ import {
   undoneTurn,
 } from "./undo.generator"
 
-// Seed property tests. Under Stryker, skip shrinking: a mutant only needs to
-// fail, and shrinking a counterexample can take longer than the mutant's timeout.
-fc.configureGlobal({ seed: 42, endOnFailure: process.env.STRYKER === "1" })
+// Under Stryker each mutant reruns every property, so counts are lower but still above each kill's
+// first failing case.
+const STRYKER = process.env.STRYKER === "1"
+
+// Fixed seed. Under Stryker, skip shrinking, which can outlast the mutant timeout.
+fc.configureGlobal({ seed: 42, endOnFailure: STRYKER })
 
 // Snapshots skip new untracked files larger than this (src/snapshot/index.ts).
 const SNAPSHOT_LIMIT = 2 * 1024 * 1024
@@ -63,8 +66,7 @@ const revertIt = testEffect(
   ),
 )
 
-// Checks a property against the services already built for the test, so each
-// generated case gets a fresh repo without rebuilding every layer.
+// Runs a property with the test's services, giving each case a fresh repo.
 const undoProperty = <T, E, R>(
   arbitrary: fc.Arbitrary<T>,
   numRuns: number,
@@ -77,9 +79,8 @@ const undoProperty = <T, E, R>(
         fc.asyncProperty(arbitrary, (input) => Effect.runPromiseWith(context)(Effect.scoped(testCase(input)))),
         {
           numRuns,
-          // Shrinking a failure can take thousands of git processes. Stop in time for
-          // fast-check to report the smallest counterexample found so far, and count
-          // running out of time as a failure so a slow run can't pass by doing less.
+          // Shrinking can spawn thousands of git processes, so stop in time and count a timeout as
+          // a failure.
           interruptAfterTimeLimit: 150_000,
           markInterruptAsFailure: true,
         },
@@ -180,10 +181,8 @@ const addText = Effect.fn("test.addText")(function* (
   })
 })
 
-// Records one agent turn the way the session processor does: a snapshot before
-// each step, a step-finish with a snapshot after it, and a patch only if the step
-// changed files. An aborted step, which can only be the last, has no step-finish.
-// `pruned` stores a hash git can't read in place of the snapshots a prune removes.
+// Records an agent turn like the session processor: snapshots around each step and a patch if files
+// changed. An aborted last step has no step-finish, and `pruned` swaps in an unreadable hash.
 const agentTurn = Effect.fn("test.agentTurn")(function* (
   sessionID: SessionID,
   dir: string,
@@ -231,8 +230,7 @@ const agentTurn = Effect.fn("test.agentTurn")(function* (
 
 const USER_EDIT = new TextEncoder().encode("edited by the user after the turn\n")
 
-// The oracle for R3, as a plain list of lines: a user segment ends up with the
-// user's lines, and every other line ends up as it was before the turn.
+// R3 oracle: user segments get the user's lines, and every other line keeps its pre-turn text.
 const modelSeparatedEdits = (input: typeof separatedEdits extends fc.Arbitrary<infer T> ? T : never) => {
   const blocks = input.segments.flatMap((segment, index) => {
     const owner = (index % 2 === 0) === input.agentFirst ? ("agent" as const) : ("user" as const)
@@ -250,8 +248,8 @@ const modelSeparatedEdits = (input: typeof separatedEdits extends fc.Arbitrary<i
     replaced: [],
   }
   const all = [...blocks, tail]
-  // Dropping the final newline changes the last line, so it's only generated
-  // when that line is untouched. Otherwise it would adjoin a segment's edit.
+  // A missing final newline changes the last line, so it's only dropped when that line is
+  // untouched.
   const ending = input.finalNewline || input.trailing === 0 ? input.eol : ""
   const render = (pick: (block: (typeof all)[number]) => string[]) => {
     const lines = all.flatMap(pick)
@@ -265,9 +263,8 @@ const modelSeparatedEdits = (input: typeof separatedEdits extends fc.Arbitrary<i
   }
 }
 
-// The three versions of R4's conflicting file that aren't a symlink. Undefined
-// means the file doesn't exist. Each binary version starts with a NUL byte and
-// ends in a byte the others don't, so all three differ.
+// R4's non-symlink file versions, where undefined means no file. Binary versions start with NUL
+// and end in distinct bytes.
 const conflictVersions = (input: typeof conflictingEdits extends fc.Arbitrary<infer T> ? T : never) => {
   const text = (lines: string[]) => new TextEncoder().encode(lines.map((line) => line + input.eol).join(""))
   const base = Array.from({ length: input.lines }, (_, line) => `line-${line}`)
@@ -303,18 +300,14 @@ const readLink = (link: string) => Effect.promise(() => fs.readlink(link))
 const snapshotTests = process.platform === "win32" ? describe.skip : describe
 
 snapshotTests("/undo properties", () => {
-  // R1: When /undo reverts a turn, it deletes each file the agent created that
-  // snapshots cover (git project with snapshots on, inside the worktree, not
-  // gitignored, at most 2 MiB) and that hasn't changed since the turn ended,
-  // sending changed files to R4 and reporting uncovered files under R6.
+  // R1: /undo deletes each snapshot-covered file the agent created, unless it changed after the
+  // turn.
   // Kind: invariant
-  // Acceptance criteria: start with a clean git tree, the agent creates files,
-  // and after /undo `git status` shows a clean tree. A file over the limit and a
-  // file the user edited after the turn stay on disk, so they're the only entries
-  // `git status` may still show.
+  // Acceptance criteria: after /undo, `git status` is clean except for the oversized and
+  // user-edited files.
   revertIt.live(
     "R1: every snapshot-covered file the agent created is gone after /undo unless the user edited it",
-    undoProperty(createdTurn, 25, (input) =>
+    undoProperty(createdTurn, STRYKER ? 15 : 25, (input) =>
       provideTmpdirInstance(
         Effect.fnUntraced(function* (dir) {
           const sessions = yield* Session.Service
@@ -324,8 +317,7 @@ snapshotTests("/undo properties", () => {
           yield* put(at(".gitignore"), "build/\n")
           yield* put(at("kept-tracked.txt"), "tracked before the turn\n")
           yield* commitAll(dir)
-          // Exists before the turn but isn't committed, so a careless
-          // "delete everything untracked" would remove it.
+          // Untracked before the turn, so "delete everything untracked" would remove it.
           yield* put(at("kept-untracked.local"), "the user's own file\n")
           const clean = yield* gitStatus(dir)
 
@@ -380,18 +372,13 @@ snapshotTests("/undo properties", () => {
     TEST_TIMEOUT,
   )
 
-  // R2: When /undo reverts a turn, each snapshot-covered file (see R1) that the
-  // agent edited or deleted and that hasn't changed since the turn ended returns
-  // to its exact pre-turn content, unless its snapshot was pruned after about 7
-  // days (then it's left untouched and reported under R6), and only the working
-  // tree changes, not the git index, HEAD, or commits.
+  // R2: /undo restores each snapshot-covered file the agent edited or deleted to its pre-turn
+  // bytes, changing only the working tree.
   // Kind: round-trip
-  // Acceptance criteria: start with a clean git tree, the agent edits files, and
-  // after /undo `git status` reports a clean tree and `git diff` is empty. The next
-  // property covers the pruned-snapshot case.
+  // Acceptance criteria: after /undo, `git status` is clean and `git diff` is empty.
   revertIt.live(
     "R2: edit then /undo restores the exact bytes of every file",
-    undoProperty(editedTurn, 60, (input) =>
+    undoProperty(editedTurn, STRYKER ? 15 : 60, (input) =>
       provideTmpdirInstance(
         Effect.fnUntraced(function* (dir) {
           const sessions = yield* Session.Service
@@ -435,18 +422,13 @@ snapshotTests("/undo properties", () => {
     TEST_TIMEOUT,
   )
 
-  // R2: When /undo reverts a turn, each snapshot-covered file (see R1) that the
-  // agent edited or deleted and that hasn't changed since the turn ended returns
-  // to its exact pre-turn content, unless its snapshot was pruned after about 7
-  // days (then it's left untouched and reported under R6), and only the working
-  // tree changes, not the git index, HEAD, or commits.
+  // R2, pruned clause: a file whose snapshot was pruned stays as the turn left it.
   // Kind: invariant
-  // Acceptance criteria: this covers the "unless its snapshot was pruned" clause.
-  // After /undo, every file is exactly as the turn left it. Waiting 7 days isn't
-  // practical in a test, so an unreadable hash stands in for a pruned snapshot.
+  // Acceptance criteria: with an unreadable hash standing in for a pruned snapshot, /undo leaves
+  // every file as the turn left it.
   revertIt.live(
     "R2: /undo leaves files untouched when their snapshots were pruned",
-    undoProperty(prunedTurn, 25, (input) =>
+    undoProperty(prunedTurn, STRYKER ? 10 : 25, (input) =>
       provideTmpdirInstance(
         Effect.fnUntraced(function* (dir) {
           const sessions = yield* Session.Service
@@ -481,18 +463,10 @@ snapshotTests("/undo properties", () => {
     TEST_TIMEOUT,
   )
 
-  // R2: When /undo reverts a turn, each snapshot-covered file (see R1) that the
-  // agent edited or deleted and that hasn't changed since the turn ended returns
-  // to its exact pre-turn content, unless its snapshot was pruned after about 7
-  // days (then it's left untouched and reported under R6), and only the working
-  // tree changes, not the git index, HEAD, or commits.
+  // R2, two /undo in a row: both turns are undone.
   // Kind: round-trip
-  // Acceptance criteria: this covers /undo run twice in a row, which undoes the
-  // last two turns. After the second /undo, every file turn 1 touched has its
-  // pre-turn-1 bytes, a file the user edited between the turns keeps that edit
-  // (turn 1 never changed it, and turn 2 is already undone), every other file is
-  // unchanged, a gitignored tracked file keeps the agent's edit because snapshots
-  // don't cover it, and HEAD doesn't move.
+  // Acceptance criteria: files turn 1 touched get their pre-turn-1 bytes, user edits between the
+  // turns stay, a gitignored tracked file keeps the agent's edit, and HEAD doesn't move.
   revertIt.live(
     "R2: two /undo in a row restore every file to its state before both turns",
     undoProperty(consecutiveUndo, 20, (input) =>
@@ -552,18 +526,13 @@ snapshotTests("/undo properties", () => {
     TEST_TIMEOUT,
   )
 
-  // R3: If, after the turn ended, the user edits a text file the agent modified
-  // and those edits neither touch nor directly adjoin any line the agent changed,
-  // /undo reverts only the agent's changes and keeps the user's edits exactly,
-  // while changes made during the turn count as the agent's.
+  // R3: when the user's post-turn edits don't touch or adjoin the agent's lines, /undo reverts only
+  // the agent's.
   // Kind: model / oracle
-  // Acceptance criteria: the agent changes some lines and the user edits others
-  // by hand. After /undo the agent's lines match the pre-turn content and the
-  // user's edits remain, byte for byte. The oracle is modelSeparatedEdits, a plain
-  // list of lines.
+  // Acceptance criteria: after /undo the file matches modelSeparatedEdits byte for byte.
   revertIt.live(
     "R3: /undo agrees with a line-by-line model when edits don't overlap",
-    undoProperty(separatedEdits, 25, (input) =>
+    undoProperty(separatedEdits, STRYKER ? 10 : 25, (input) =>
       provideTmpdirInstance(
         Effect.fnUntraced(function* (dir) {
           const sessions = yield* Session.Service
@@ -589,20 +558,11 @@ snapshotTests("/undo properties", () => {
     TEST_TIMEOUT,
   )
 
-  // R4: If the user's post-turn edits touch or directly adjoin lines the agent
-  // changed, or the file can't be merged by line (binary, created by the agent
-  // then edited, or deleted by the agent then recreated), /undo names the file and
-  // any conflicting on-disk lines in the TUI and asks to overwrite (return it to
-  // its pre-turn state, discarding the user's edits) or skip (leave it
-  // byte-identical, which is also the result of dismissing the prompt or using a
-  // client that can't prompt), while other files are still reverted.
+  // R4: when the user's post-turn edits touch or adjoin the agent's lines, or the file can't be
+  // merged by line, /undo skips that file unless the user overwrites it, and reverts the rest.
   // Kind: invariant
-  // Acceptance criteria: SessionRevert is a client that can't prompt, so it must
-  // skip. The conflicting file is byte-identical to its state just before /undo
-  // (a symlink keeps its target, and nothing is written through it), and every
-  // other file the agent edited is back to its pre-turn bytes. Created-then-edited
-  // files are covered by the R1 property. The TUI's naming of files and lines and
-  // the overwrite choice aren't implemented, so they aren't checked.
+  // Acceptance criteria: SessionRevert can't prompt, so it skips: the conflicting file or symlink is
+  // unchanged, and other agent-edited files get their pre-turn bytes. The TUI prompt isn't checked.
   revertIt.live(
     "R4: /undo leaves a file it can't merge byte-identical and still reverts the rest",
     undoProperty(conflictingEdits, 25, (input) =>
@@ -648,19 +608,11 @@ snapshotTests("/undo properties", () => {
     TEST_TIMEOUT,
   )
 
-  // R6: After every /undo, the TUI shows `Reverted (N files changed)` with each
-  // affected path marked deleted, restored, kept your edits, skipped, or not
-  // reverted (uncovered files only if changed by the edit, write, or apply_patch
-  // tools), or it says that files weren't reverted because the project has no
-  // snapshots, or that there was nothing to undo.
+  // R6: after /undo, the TUI lists each affected file and its outcome, or says nothing changed.
   // Kind: model / oracle
-  // Acceptance criteria: the TUI's wording isn't implemented, so this checks the
-  // data the TUI's file list reads after /undo: the stored session diff, the diff
-  // event, the session summary, and the revert's own diff. Each must name exactly
-  // the files the undone turn changed (not earlier turns, and not a file rewritten
-  // with its own bytes), and the totals must be the lines the generator added and
-  // removed. /undo given a message the session doesn't have is the nothing-to-undo
-  // case: it records no revert and changes no files.
+  // Acceptance criteria: the stored diff, diff event, summary and revert diff name exactly the files
+  // the undone turn changed with the generated line totals, and /undo of an unknown message changes
+  // nothing.
   revertIt.live(
     "R6: /undo reports exactly the files and lines the undone turn changed",
     undoProperty(reportedTurn, 20, (input) =>
@@ -744,9 +696,8 @@ snapshotTests("/undo properties", () => {
   )
 })
 
-// R5 needs the real request the model would receive, so unlike the file
-// properties it runs through SessionPrompt against the fake LLM server. MCP and
-// LSP are stubbed because they start external processes and don't affect history.
+// R5 checks the real model request, so it runs through SessionPrompt and the fake LLM server, with
+// MCP and LSP stubbed.
 const promptIt = testEffect(
   LayerNode.compile(
     LayerNode.group([
@@ -773,8 +724,7 @@ const promptIt = testEffect(
   ),
 )
 
-// JSON escapes characters such as quotes, so a search of the serialized request
-// has to look for the escaped form or it would miss the secret and pass wrongly.
+// JSON escapes quotes and similar characters, so search the request for the escaped secret.
 const inRequest = (text: string) => JSON.stringify(text).slice(1, -1)
 
 const addEarlierTurns = Effect.fn("test.addEarlierTurns")(function* (sessionID: SessionID, dir: string, count: number) {
@@ -789,18 +739,14 @@ const addEarlierTurns = Effect.fn("test.addEarlierTurns")(function* (sessionID: 
 })
 
 describe("/undo context properties", () => {
-  // R5: `/undo` removes the undone prompt, the agent's response, and any file
-  // contents the agent read during that turn from the conversation context sent
-  // to the model in later turns.
+  // R5: /undo removes the undone turn's prompt, response and read file contents from later
+  // requests.
   // Kind: metamorphic
-  // Acceptance criteria: prompt 1 reads a file holding a secret, /undo runs, and
-  // prompt 2 is sent. The request for prompt 2 holds neither the secret nor the
-  // text of prompt 1. The metamorphic relation is stronger: adding a turn and then
-  // undoing it must leave the next request's messages identical to a session
-  // where that turn never happened.
+  // Acceptance criteria: adding and undoing a turn leaves the next request identical to never
+  // having it, so it holds neither the secret nor prompt 1.
   promptIt.live(
     "R5: adding then undoing a turn leaves the next request unchanged",
-    undoProperty(undoneTurn, 20, (input) =>
+    undoProperty(undoneTurn, STRYKER ? 10 : 20, (input) =>
       provideTmpdirServer(
         Effect.fnUntraced(function* ({ dir, llm }) {
           const sessions = yield* Session.Service
@@ -819,8 +765,7 @@ describe("/undo context properties", () => {
             return (yield* llm.inputs).slice(earlier)
           })
 
-          // A fixed title stops a title-generation request from taking
-          // the queued reply. It isn't part of the conversation context.
+          // A fixed title keeps a title request from taking the queued reply.
           const undone = yield* sessions.create({ title: "undone" })
           yield* addEarlierTurns(undone.id, dir, input.earlierTurns)
           const user = yield* addUser(undone.id, input.firstPrompt)
