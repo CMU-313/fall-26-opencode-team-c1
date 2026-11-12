@@ -1,0 +1,9 @@
+diff --git a/packages/opencode/src/cli/cmd/stats.ts b/packages/opencode/src/cli/cmd/stats.ts
+--- a/packages/opencode/src/cli/cmd/stats.ts
++++ b/packages/opencode/src/cli/cmd/stats.ts
+@@ -262,3 +262,3 @@
+     stats.totalMessages += result.messageCount
+-    stats.totalCost += result.sessionCost
++    stats.totalCost += Math.round(result.sessionCost * 100) / 100
+     stats.totalTokens.input += result.sessionTokens.input
+     

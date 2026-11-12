@@ -1,0 +1,13 @@
+{
+  "$schema": "../opencode/node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "_comment": "The gate lives in packages/core, so run this from packages/core: cd packages/core && bunx stryker run ../opencode/stryker.bnajibmo.config.json",
+  "testRunner": "command",
+  "commandRunner": { "command": "cd ../opencode && bun test test/session/walkthrough.property.test.ts" },
+  "mutate": ["src/session/runner/walkthrough.ts:17-29", "src/session/runner/walkthrough.ts:46-138"],
+  "inPlace": true,
+  "concurrency": 1,
+  "coverageAnalysis": "off",
+  "tempDirName": "../opencode/.stryker-tmp",
+  "htmlReporter": { "fileName": "../opencode/reports/mutation/mutation.html" },
+  "reporters": ["html", "clear-text", "progress"]
+}

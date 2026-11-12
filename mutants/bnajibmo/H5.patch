@@ -1,0 +1,14 @@
+diff --git a/packages/core/src/session/runner/walkthrough.ts b/packages/core/src/session/runner/walkthrough.ts
+index 9b312f0..4fda0b6 100644
+--- a/packages/core/src/session/runner/walkthrough.ts
++++ b/packages/core/src/session/runner/walkthrough.ts
+@@ -58,8 +58,7 @@ export function make(directory: string, question: Pick<QuestionV2.Interface, "as
+             !details ||
+             listed.length !== files.size ||
+             new Set(listed).size !== files.size ||
+-            listed.some((file) => !files.has(file)) ||
+-            (followup && !details.walkthrough_answer)
++            listed.some((file) => !files.has(file))
+           )
+             return {
+               result: {

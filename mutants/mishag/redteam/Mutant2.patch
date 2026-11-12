@@ -1,0 +1,8 @@
+diff --git a/packages/opencode/src/cli/cmd/stats.ts b/packages/opencode/src/cli/cmd/stats.ts
+--- a/packages/opencode/src/cli/cmd/stats.ts
++++ b/packages/opencode/src/cli/cmd/stats.ts
+@@ -110,3 +110,3 @@
+     }
+-    return Date.now() - days * MS_IN_DAY
++    return new Date(Date.now() - days * MS_IN_DAY).setHours(0, 0, 0, 0)
+   })()

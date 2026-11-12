@@ -1,0 +1,12 @@
+diff --git a/packages/opencode/src/cli/cmd/stats.ts b/packages/opencode/src/cli/cmd/stats.ts
+--- a/packages/opencode/src/cli/cmd/stats.ts
++++ b/packages/opencode/src/cli/cmd/stats.ts
+@@ -322,7 +322,7 @@ export function rankModels(modelUsage: SessionStats["modelUsage"], modelLimit:
+     if (messages !== 0) return messages
+     return modelA.localeCompare(modelB)
+   })
+-  return modelLimit === Infinity ? sortedModels : sortedModels.slice(0, modelLimit)
++  return modelLimit === Infinity ? sortedModels : sortedModels.slice(0, modelLimit - 1)
+ }
+ 
+ export function displayStats(stats: SessionStats, toolLimit?: number, modelLimit?: number) {

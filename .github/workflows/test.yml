@@ -57,6 +57,11 @@ jobs:
             turbo-${{ runner.os }}-${{ hashFiles('turbo.json', '**/package.json') }}-
             turbo-${{ runner.os }}-
 
+      - name: Run walkthrough property tests (bnajibmo)
+        timeout-minutes: 5
+        working-directory: packages/opencode
+        run: bun test test/session/walkthrough.property.test.ts
+
       - name: Run unit tests
         timeout-minutes: 15
         # Default turbo concurrency (10) oversubscribes ubuntu-latest's 4
