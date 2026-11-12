@@ -132,6 +132,19 @@ const numberedLines = (output: string) =>
     .filter((l) => /^\d+: /.test(l))
 const footerOf = (output: string) => contentOf(output).split("\n").at(-1) ?? ""
 
+// (p5) model of the 50 KB cap for R5: how many lines fit if each line costs its
+// bytes plus one \n before it (not before the first line)
+const MAX_BYTES = 50 * 1024
+const linesUnderCap = (lens: number[]) => {
+  let used = 0
+  for (let i = 0; i < lens.length; i++) {
+    const size = lens[i] + (i > 0 ? 1 : 0)
+    if (used + size > MAX_BYTES) return i
+    used += size
+  }
+  return lens.length
+}
+
 // generators
 
 // one line of a file. interviewees cared about exact spacing (S-4 "the exact
@@ -356,20 +369,33 @@ describe("read tool properties (traceability/wliu4.md)", () => {
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped()
       // small limits stand in for the 2000 line default so it runs fast. offset
-      // can land anywhere including the last line
+      // can land anywhere including the last line.
+      // (p5) files can be empty now, and offset can go up to 5 past the end,
+      // since asking for lines that aren't there should say so too
       const caseArb = fc
-        .record({ total: fc.integer({ min: 1, max: 60 }), limit: fc.integer({ min: 1, max: 60 }) })
+        .record({ total: fc.integer({ min: 0, max: 60 }), limit: fc.integer({ min: 1, max: 60 }) })
         .chain(({ total, limit }) =>
           fc.record({
             total: fc.constant(total),
             limit: fc.constant(limit),
-            offset: fc.integer({ min: 1, max: total }),
+            offset: fc.integer({ min: 1, max: total + 5 }),
           }),
         )
       yield* forAll([caseArb], ({ total, limit, offset }) =>
         Effect.gen(function* () {
           const file = path.join(dir, "long.txt")
           yield* put(file, Array.from({ length: total }, (_, i) => `row ${i + 1}`).join("\n"))
+          // an empty file read from line 1 is fine (0 lines), anything else past
+          // the end is an error that says which offset and how many lines
+          if (offset > total && !(total === 0 && offset === 1)) {
+            const exit = yield* readExit(dir, { filePath: file, offset, limit })
+            expect(Exit.isFailure(exit)).toBe(true)
+            if (Exit.isFailure(exit))
+              expect(String(Cause.squash(exit.cause))).toContain(
+                `Offset ${offset} is out of range for this file (${total} lines)`,
+              )
+            return
+          }
           const result = yield* read(dir, { filePath: file, offset, limit })
           const last = Math.min(offset + limit - 1, total)
           expect(numberedLines(result.output)).toHaveLength(last - offset + 1)
@@ -378,27 +404,46 @@ describe("read tool properties (traceability/wliu4.md)", () => {
               ? `(Showing lines ${offset}-${last} of ${total}. Use offset=${last + 1} to continue.)`
               : `(End of file - total ${total} lines)`,
           )
+          // (p5) the ui shows a "truncated" tag from metadata, it has to match the footer
+          expect(result.metadata.truncated).toBe(last < total)
         }),
       )
 
-      // files big enough to hit the 50 KB cap before the line limit
+      // files big enough to hit the 50 KB cap before the line limit.
+      // (p5) the first version took "how many lines were shown" from the output
+      // and only checked the footer matched it, so a tool that never capped at
+      // all still passed (stryker: if (true), H4). now a simple model says how
+      // many lines should fit: each line's bytes plus one \n between lines, up
+      // to 51,200 bytes. the generator puts the file right on that edge (nudge
+      // -2 to +2 bytes) since that's where off-by-one bugs show up
+      const capCase = fc
+        .record({
+          width: fc.integer({ min: 800, max: 1900 }),
+          nudge: fc.integer({ min: -2, max: 2 }),
+          extra: fc.integer({ min: 0, max: 3 }),
+        })
+        .map(({ width, nudge, extra }) => {
+          const full = Math.floor(MAX_BYTES / (width + 1))
+          const edge = Math.max(1, MAX_BYTES - full * (width + 1) + nudge)
+          return [...Array(full).fill(width), edge, ...Array(extra).fill(width)] as number[]
+        })
       yield* forAll(
-        [fc.integer({ min: 40, max: 120 }), fc.integer({ min: 800, max: 1900 })],
-        (rows, width) =>
+        [capCase],
+        (lens) =>
           Effect.gen(function* () {
             const file = path.join(dir, "wide.txt")
-            yield* put(file, Array.from({ length: rows }, (_, i) => `${i + 1}`.padEnd(width, "x")).join("\n"))
+            yield* put(file, lens.map((n) => "x".repeat(n)).join("\n"))
             const result = yield* read(dir, { filePath: file })
-            const shown = numberedLines(result.output).length
-            if (shown < rows) {
-              expect(footerOf(result.output)).toBe(
-                `(Output capped at 50 KB. Showing lines 1-${shown}. Use offset=${shown + 1} to continue.)`,
-              )
-            } else {
-              expect(footerOf(result.output)).toBe(`(End of file - total ${rows} lines)`)
-            }
+            const fit = linesUnderCap(lens)
+            expect(numberedLines(result.output)).toHaveLength(fit)
+            expect(footerOf(result.output)).toBe(
+              fit < lens.length
+                ? `(Output capped at 50 KB. Showing lines 1-${fit}. Use offset=${fit + 1} to continue.)`
+                : `(End of file - total ${lens.length} lines)`,
+            )
+            expect(result.metadata.truncated).toBe(fit < lens.length)
           }),
-        { numRuns: 25 },
+        { numRuns: 40 },
       )
     }),
   )
