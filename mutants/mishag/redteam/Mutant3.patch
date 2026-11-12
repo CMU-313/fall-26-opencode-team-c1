@@ -1,0 +1,7 @@
+diff --git a/packages/opencode/src/cli/cmd/stats.ts b/packages/opencode/src/cli/cmd/stats.ts
+--- a/packages/opencode/src/cli/cmd/stats.ts
++++ b/packages/opencode/src/cli/cmd/stats.ts
+@@ -208,2 +208,3 @@
+   for (const usage of usageRows) {
++    if (projectID !== undefined && !filteredSessions.some((session) => session.id === usage.session_id)) continue
+     earliestTime = Math.min(earliestTime, usage.time_created)

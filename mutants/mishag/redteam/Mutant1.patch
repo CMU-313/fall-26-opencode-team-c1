@@ -1,0 +1,8 @@
+diff --git a/packages/opencode/src/cli/cmd/stats.ts b/packages/opencode/src/cli/cmd/stats.ts
+--- a/packages/opencode/src/cli/cmd/stats.ts
++++ b/packages/opencode/src/cli/cmd/stats.ts
+@@ -355,3 +355,3 @@
+   if (modelLimit !== undefined && Object.keys(stats.modelUsage).length > 0) {
+-    const sortedModels = Object.entries(stats.modelUsage).sort(([, a], [, b]) => b.messages - a.messages)
++    const sortedModels = Object.entries(stats.modelUsage).sort(([, a], [, b]) => b.tokens.input - a.tokens.input)
+     const modelsToDisplay = sortedModels.slice(0, modelLimit)
