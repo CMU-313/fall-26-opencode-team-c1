@@ -11,6 +11,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
+import { Global } from "@opencode-ai/core/global"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { LSP } from "@/lsp/lsp"
@@ -30,6 +31,7 @@ import {
   consecutiveUndo,
   createdTurn,
   editedTurn,
+  failedCheckout,
   prunedTurn,
   reportedTurn,
   separatedEdits,
@@ -365,6 +367,65 @@ snapshotTests("/undo properties", () => {
               ...(input.overLimit ? ["?? over-limit.bin"] : []),
             ].toSorted(),
           )
+        }),
+        { git: true },
+      ),
+    ),
+    TEST_TIMEOUT,
+  )
+
+  // R2, failed checkout: a file in the pre-turn snapshot whose checkout fails keeps the agent's bytes
+  // instead of being deleted, and the other files are still restored.
+  // Kind: invariant
+  // Acceptance criteria: after /undo, each broken file keeps the agent's bytes and every other file
+  // has its pre-turn bytes.
+  revertIt.live(
+    "R2: a snapshot-covered file whose checkout fails is kept, not deleted",
+    undoProperty(failedCheckout, STRYKER ? 10 : 20, (input) =>
+      provideTmpdirInstance(
+        Effect.fnUntraced(function* (dir) {
+          const sessions = yield* Session.Service
+          const revert = yield* SessionRevert.Service
+          const at = (file: string) => path.join(dir, file)
+          // The prefix makes each blob unique, so deleting one breaks only that file.
+          const version = (label: string, index: number, content: Uint8Array) =>
+            new Uint8Array([...new TextEncoder().encode(`${label} ${index}\n`), ...content])
+
+          // Left uncommitted so the pre-turn blobs live only in the snapshot repo, not in the project
+          // repo it borrows objects from.
+          yield* Effect.forEach(input, (file, index) => put(at(file.path), version("before", index, file.content)))
+          const session = yield* sessions.create({})
+          const messageID = yield* agentTurn(session.id, dir, [
+            Effect.forEach(input, (file, index) => put(at(file.path), version("agent", index, file.content))).pipe(
+              Effect.asVoid,
+            ),
+          ])
+
+          // Deleting a pre-turn blob makes `git checkout` fail while `ls-tree` still lists the file.
+          yield* Effect.forEach(
+            input.flatMap((file, index) => (file.broken ? [version("before", index, file.content)] : [])),
+            (bytes) =>
+              Effect.promise(async () => {
+                const oid = new Bun.CryptoHasher("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex")
+                const objects = await Array.fromAsync(
+                  new Bun.Glob(`snapshot/*/*/objects/${oid.slice(0, 2)}/${oid.slice(2)}`).scan({
+                    cwd: Global.Path.data,
+                    absolute: true,
+                  }),
+                )
+                expect(objects.length).toBeGreaterThan(0)
+                await Promise.all(objects.map((object) => fs.rm(object)))
+              }),
+          )
+
+          yield* revert.revert({ sessionID: session.id, messageID })
+
+          for (const [index, file] of input.entries()) {
+            expect(yield* exists(at(file.path))).toBe(true)
+            expect(yield* readBytes(at(file.path))).toEqual(
+              version(file.broken ? "agent" : "before", index, file.content),
+            )
+          }
         }),
         { git: true },
       ),

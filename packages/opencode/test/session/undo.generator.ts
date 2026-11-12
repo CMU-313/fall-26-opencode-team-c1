@@ -253,3 +253,11 @@ export const undoneTurn = fc.record({
   }),
   assistantMessages: fc.integer({ min: 1, max: 3 }),
 })
+
+// R2, failed checkout: files exist before the turn, so the snapshot covers them. `broken` files
+// lose their pre-turn blob, so `git checkout` fails while `ls-tree` still lists them.
+export const failedCheckout = samePathList(
+  fc.record({ path: anyPath, content: anyContent, broken: fc.boolean() }),
+  1,
+  4,
+).filter((files) => files.some((file) => file.broken))

@@ -514,6 +514,12 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
                   cwd: state.worktree,
                 })
                 if (tree.code === 0 && tree.text.trim()) {
+                  // A blob git can't read makes checkout delete the file before failing, so put back
+                  // the bytes /undo found on disk.
+                  const kept = yield* regularFile(current, op.rel)
+                  if (kept && !(yield* exists(op.file))) {
+                    yield* fs.writeFile(op.file, kept).pipe(Effect.catch(() => Effect.void))
+                  }
                   yield* Effect.logInfo("file existed in snapshot but checkout failed, keeping", {
                     file: op.file,
                     hash: op.hash,

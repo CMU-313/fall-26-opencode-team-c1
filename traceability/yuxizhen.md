@@ -153,3 +153,25 @@ The score as Stryker reports it is (killed + timeout) / all 396 mutants. Excludi
 
 #### Why not every mutant was killed
 97 of the 140 survivors are equivalent: they change only logs, span names, concurrency, or dead branches, so no test can tell them apart from the original. The other 43 only behave differently in situations the TUI's /undo never reaches (a `partID`, a message deleted before cleanup, a git failure, or opencode running from a subdirectory of the repo), and covering them would need new properties plus another >1h Stryker run.
+
+## Agent failure case
+
+### Property added
+Claude Code added "R1: created files are not deleted when their checkout fails but they exist in the snapshot" and its generator `checkoutFailureOnCreated`. It has the agent create 1–3 files, makes their parent directories read-only (`chmod 0o555`) so `git checkout` fails, runs /undo, and asserts every file still exists with its created bytes. Since all requirements now have at least 1 property, I had the agent target a more specific requirement under a specific R1 case. 
+
+#### Transcripts
+![Prompt input](./yuxizhen-prompt.png)
+![Agent output](./yuxizhen-output.png)
+![Property run passes](./yuxizhen-pass.png)
+
+### The mutant it let survive
+H6 (`mutants/yuxizhen/H6.patch`) changes `if (tree.code === 0 && tree.text.trim())` to `if (false)` in `single` in `snapshot/index.ts`. A file that is in the snapshot but whose checkout failed is then deleted instead of kept. The added property passed on H6.
+
+### Why the property was too weak
+The generator never reaches the bug: the files are created during the turn, so they aren't in the pre-turn snapshot, and `ls-tree` never lists them. The oracle is always true: `remove` swallows its error, and a read-only directory blocks deleting a file just as it blocks checking one out, so the file stays whether or not the code tries to delete it.
+
+
+### Strengthened version & evidence it killed the mutant
+Replaced with "R2: a snapshot-covered file whose checkout fails is kept, not deleted" (`undo.property.test.ts:377-434`, generator `failedCheckout`), moved to R2 because only files that existed before the turn are in the snapshot. The files exist before the turn and the agent edits them. The test then deletes the pre-turn blob of each `broken` file from the snapshot repo, so `git checkout` fails while `ls-tree` still lists the file, and checks that broken files keep the agent's bytes and the others get their pre-turn bytes. This found a bug that violates R2: git deletes the file before failing on a missing blob, so `snapshot/index.ts` now writes back the bytes /undo found on disk when it keeps a file.
+
+**Evidence:** with the fix, the property passes (and the whole `undo.property.test.ts` and `test/snapshot` pass, 64/64). With H6 applied, it fails on the first case (`[{"path":"src/Helper.java","content":[],"broken":true}]`: `exists` expected true, received false), so H6 is killed. 
