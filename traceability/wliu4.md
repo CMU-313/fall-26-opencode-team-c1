@@ -130,3 +130,37 @@ One thing I found along the way: in the first run, `agent.ts` `"*.env": ""` and 
 ### Survivors outside my requirements (2)
 
 `read.ts:258` `always: ["*"]` to `[]` and to `[""]`. This is the list of patterns opencode remembers when the user clicks "Always allow". None of R1-R6 say anything about remembering an approval, so no property checks it. These are not equivalent, since a real user would get asked again after clicking "Always allow". I left them as survivors instead of adding a property for behavior no interviewee asked about.
+
+## Agent failure case
+
+opencode (Build agent, GPT-6.1 Sol) wrote an R5 property for me. Its file is saved at `mutants/wliu4/agent/read.agent.property.test.ts`. I moved it out of `test/` so CI doesn't run a weak duplicate. I told it not to open my own property file so it would write its own version.
+
+**My prompt:**
+
+> I'm writing property-based tests (fast-check) for the read tool in packages/opencode/src/tool/read.ts. Look at packages/opencode/test/tool/read.test.ts to see how the read tool is set up in tests. Do not open read.property.test.ts, I want a separate version. Write a fast-check property for this requirement: R5: When a file is too long to show at once, the output says which lines were shown and how to get the rest. This includes the 50 KB output cap, where the output ends with "(Output capped at 50 KB. Showing lines 1-N. Use offset=N+1 to continue.)" Put it in a new file packages/opencode/test/tool/read.agent.property.test.ts with one test, and add a short comment explaining the generator. Then run it with bun test from packages/opencode and make sure it passes.
+
+**opencode's response (shortened):**
+
+> The tool puts the truncation notice just before </content>. I'll test both line-limit and 50 KB truncation in each generated case, checking the exact range, continuation offset, and that reading at that offset returns the next line.
+>
+> [creates the file, fixes a runtime error and a type error, reruns]
+>
+> Across 100 generated cases, it checks both line-limit and 50 KB truncation, including the exact notice, displayed line range, and continuation offset. It also verifies that reading at the suggested offset returns the next line. bun test: 1 pass, 800 assertions. bun typecheck: passed.
+
+**The generator it wrote:**
+
+~~~ts
+// Fixed-width ASCII lines avoid per-line truncation; every case exercises both line and byte caps.
+width: fc.integer({ min: 64, max: 2000 }),
+...
+const cappedLines = Math.floor((50 * 1024 + 1) / (width + 1))
+const lines = Array.from({ length: cappedLines + extra }, (_, i) => `${i + 1}:`.padEnd(width, "x"))
+~~~
+
+**The mutant it let survive:** H4, `read.ts` line 164 `flags.bytes + size <= MAX_BYTES` changed to `<`. Stryker's `(raw.length > 0 ? 1 : 0)` to `(true ? 1 : 0)` on line 163 also survived it. Its property did kill H5 and the mutants that never cap or skip the newline byte.
+
+**Why the property was too weak:** the oracle is fine. `cappedLines` is the right formula. The generator is the problem. Every line has the same width w, so n lines always take n×(w+1) - 1 bytes. H4 only changes the answer when a file lands exactly on 51,200 bytes, which needs w+1 to divide 51,201. 51,201 = 9 × 5,689, so the only widths that work are 8 and 5,688, and opencode only picks widths from 64 to 2000. No number of runs can reach the bug. The comment says "every case exercises both line and byte caps" and the summary says it checks "the exact notice", which sounds thorough, but it never tests the one byte where the cap decision flips. This is the "generator that never reaches the bug" case.
+
+**Strengthened version:** my R5 cap property in `read.property.test.ts` (`capCase`). It builds lines of one width, then sizes one last line so the total is 51,200 bytes plus a nudge of -2 to +2, then adds 0 to 3 more lines. The expected number of lines comes from the same kind of model (`linesUnderCap`).
+
+**Evidence:** with H4 applied, opencode's property still passes (0 fail). My R5 fails with the counterexample 63 lines of 800 characters plus one line of 737 characters. That is 63 × 800 + 737 + 63 newlines = exactly 51,200 bytes. The model says all 64 lines fit, but the H4 tool cuts the last one. Without H4, all 6 of my properties pass.
