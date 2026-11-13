@@ -1,0 +1,12 @@
+diff --git a/packages/core/src/session/runner/walkthrough.ts b/packages/core/src/session/runner/walkthrough.ts
+index 9b312f0..1db8df4 100644
+--- a/packages/core/src/session/runner/walkthrough.ts
++++ b/packages/core/src/session/runner/walkthrough.ts
+@@ -49,7 +49,6 @@ export function make(directory: string, question: Pick<QuestionV2.Interface, "as
+   ): ReturnType<ToolRegistry.Materialization["settle"]> =>
+     serial.withPermit(
+       Effect.gen(function* () {
+-        if (cancelled) return yield* Effect.die(new QuestionV2.RejectedError())
+         if (edits.has(input.call.name) && !approved) {
+           const decoded = Schema.decodeUnknownOption(Input)(input.call.input)
+           const details = Option.getOrUndefined(decoded)

@@ -1,0 +1,29 @@
+{
+  "testRunner": "command",
+  "commandRunner": {
+    "command": "t=$(mktemp -d); STRYKER=1 TMPDIR=$t taskset -c 0-3 bun test --bail test/session/undo.property.test.ts -t 'R[1235]: '; s=$?; rm -rf $t; exit $s"
+  },
+  "mutate": [
+    "src/session/revert.ts:38-91",
+    "src/session/revert.ts:95-95",
+    "src/session/revert.ts:98-108",
+    "src/session/revert.ts:120-131",
+    "src/session/revert.ts:141-143",
+    "src/snapshot/index.ts:247-260",
+    "src/snapshot/index.ts:268-280",
+    "src/snapshot/index.ts:284-310",
+    "src/snapshot/index.ts:361-376",
+    "src/snapshot/index.ts:379-393",
+    "src/snapshot/index.ts:421-450",
+    "src/snapshot/index.ts:453-459",
+    "src/snapshot/index.ts:460-516",
+    "src/snapshot/index.ts:522-559",
+    "src/snapshot/index.ts:569-581",
+    "src/snapshot/index.ts:591-604"
+  ],
+  "coverageAnalysis": "off",
+  "incremental": false,
+  "reporters": ["html", "clear-text", "progress"],
+  "concurrency": 6,
+  "timeoutMS": 60000
+}

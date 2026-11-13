@@ -1,0 +1,12 @@
+diff --git a/packages/opencode/src/cli/cmd/stats.ts b/packages/opencode/src/cli/cmd/stats.ts
+--- a/packages/opencode/src/cli/cmd/stats.ts
++++ b/packages/opencode/src/cli/cmd/stats.ts
+@@ -320,5 +320,5 @@
+   const sortedModels = Object.entries(modelUsage).sort(([modelA, usageA], [modelB, usageB]) => {
+-    const messages = usageB.messages - usageA.messages
+-    if (messages !== 0) return messages
++    const cost = usageB.cost - usageA.cost
++    if (cost !== 0) return cost
+     return modelA.localeCompare(modelB)
+   })
+   

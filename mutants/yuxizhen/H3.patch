@@ -1,0 +1,13 @@
+diff --git a/packages/opencode/src/snapshot/index.ts b/packages/opencode/src/snapshot/index.ts
+index 02b8698..a22bacc 100644
+--- a/packages/opencode/src/snapshot/index.ts
++++ b/packages/opencode/src/snapshot/index.ts
+@@ -447,7 +447,7 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
+               fs.writeFile(path.join(dir, "edited"), edited),
+             ])
+             const merged = yield* git(["merge-file", "-p", "edited", "agent", "before"], { cwd: dir })
+-            if (merged.code !== 0) {
++            if (merged.code === 0) {
+               yield* Effect.logInfo("keeping file with edits that conflict with the agent's", { file: op.file })
+               return
+             }

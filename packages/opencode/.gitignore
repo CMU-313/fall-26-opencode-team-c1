@@ -8,3 +8,5 @@ temporary-*.md
 .artifacts
 reports/
 .stryker-tmp/
+.stryker-tmp
+reports

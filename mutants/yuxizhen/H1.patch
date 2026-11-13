@@ -1,0 +1,12 @@
+diff --git a/packages/opencode/src/snapshot/index.ts b/packages/opencode/src/snapshot/index.ts
+index 02b8698..7459b2a 100644
+--- a/packages/opencode/src/snapshot/index.ts
++++ b/packages/opencode/src/snapshot/index.ts
+@@ -594,7 +594,6 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
+                 for (const op of run) {
+                   if (have.has(op.rel)) continue
+                   yield* Effect.logInfo("file did not exist in snapshot, deleting", { file: op.file, hash: op.hash })
+-                  yield* remove(op.file)
+                 }
+ 
+                 i = j
