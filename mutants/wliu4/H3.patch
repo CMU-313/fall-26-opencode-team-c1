@@ -1,0 +1,13 @@
+diff --git a/packages/opencode/src/tool/read.ts b/packages/opencode/src/tool/read.ts
+index 678ed44..299f0ce 100644
+--- a/packages/opencode/src/tool/read.ts
++++ b/packages/opencode/src/tool/read.ts
+@@ -346,7 +346,7 @@ export const ReadTool = Tool.define<
+       } else if (file.more) {
+         output += `\n\n(Showing lines ${file.offset}-${last} of ${file.count}. Use offset=${next} to continue.)`
+       } else {
+-        output += `\n\n(End of file - total ${file.count} lines)`
++        output += `\n\n(End of file - total ${file.raw.length} lines)`
+       }
+       output += "\n</content>"
+ 
